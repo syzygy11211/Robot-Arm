@@ -1,0 +1,17 @@
+# 프로젝트와 무관한 연습용 패키지
+can_motor_control/
+first/
+my_first_pkg/
+my_msgs/
+
+# 압축 원본 파일
+*.zip
+
+# ROS2 빌드 산출물
+build/
+install/
+log/
+
+# 파이썬 캐시
+__pycache__/
+*.pyc

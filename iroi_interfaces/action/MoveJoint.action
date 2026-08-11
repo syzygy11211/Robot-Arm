@@ -1,0 +1,13 @@
+# Goal
+float64[] target_angles
+float64[] max_speeds
+---
+# Result
+bool success
+bool timeout
+string error_message
+---
+# Feedback
+float64[] current_angles
+float64[] errors
+bool settled
