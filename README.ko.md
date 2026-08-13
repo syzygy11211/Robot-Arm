@@ -319,8 +319,6 @@ colcon build --symlink-install
 source install/setup.bash
 ```
 
-> `~/iroi_ws/src` 안에서 `colcon build`를 실행하지 마세요. 실제로 중첩 workspace가 생성되어 오래된 패키지를 ROS2가 먼저 읽는 문제가 발생했습니다.
-
 ### 2. 모터 ID 스캔
 
 ```bash
