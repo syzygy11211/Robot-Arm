@@ -305,7 +305,6 @@ colcon build --symlink-install
 source install/setup.bash
 ```
 
-> Do not run `colcon build` inside `~/iroi_ws/src`. Doing so previously created a nested workspace and caused ROS2 to load a stale package installation.
 
 ### 2. Scan motors
 
