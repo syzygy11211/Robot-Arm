@@ -32,6 +32,8 @@ setup(
             'scan_ids = motor_control_pkg.scan_ids:main',
             'check_home = motor_control_pkg.check_home:main',
             'arm_cli = motor_control_pkg.arm_cli:main',
+            'arm_pose_cli = motor_control_pkg.arm_pose_cli:main',
+            'arm_startup_pose = motor_control_pkg.arm_startup_pose:main',
         ],
     },
 )

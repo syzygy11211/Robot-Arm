@@ -61,6 +61,11 @@ class MotorControlNode(Node):
         # real mode 시작 시 저장된 0x94 절대 영점으로 자동 복귀할지 여부.
         self.declare_parameter('auto_home', True)
 
+        # pose-framework: reference_only startup
+        # ''=legacy auto_home, home=physical zero move, reference_only=no-motion sync, disabled=none
+        self.declare_parameter('startup_mode', '')
+        self.declare_parameter('teach_hold_speed_dps', 10.0)
+
         # Homing 속도는 출력축 기준 deg/s. 실제 0xA4에는 ratio를 곱한 모터축 속도로 보낸다.
         self.declare_parameter('homing_speed_dps', 30.0)
         self.declare_parameter('homing_timeout_sec', 8.0)
@@ -81,6 +86,14 @@ class MotorControlNode(Node):
         self.default_max_speed_dps = float(self.get_parameter('max_speed_dps').value)
         self.mock_mode = bool(self.get_parameter('mock_mode').value)
         self.auto_home = bool(self.get_parameter('auto_home').value)
+
+        startup_mode = str(self.get_parameter('startup_mode').value).strip().lower()
+        if not startup_mode:
+            startup_mode = 'home' if self.auto_home else 'disabled'
+        if startup_mode not in {'home', 'reference_only', 'disabled'}:
+            raise ValueError('startup_mode은 home/reference_only/disabled 중 하나여야 합니다.')
+        self.startup_mode = startup_mode
+        self.teach_hold_speed_dps = float(self.get_parameter('teach_hold_speed_dps').value)
         self.homing_speed_dps = float(self.get_parameter('homing_speed_dps').value)
         self.homing_timeout_sec = float(self.get_parameter('homing_timeout_sec').value)
         self.homing_settle_deg = float(self.get_parameter('homing_settle_deg').value)
@@ -123,6 +136,10 @@ class MotorControlNode(Node):
         self.zero_92 = {mid: None for mid in self.motor_ids}
         self.homed = False
 
+        # pose-framework runtime gates
+        self.torque_enabled = True
+        self.teach_mode = False
+
         # 읽기 실패 시 마지막 정상 위치를 잠깐 유지하기 위한 cache (출력축 deg).
         self._last_good_output_angle = {}
 
@@ -136,14 +153,15 @@ class MotorControlNode(Node):
             self.get_logger().info(f'[{self.arm_name}] mock_mode=True, 실제 serial 포트를 열지 않습니다.')
         else:
             self._open_real_bus_and_motors()
-            if self.auto_home:
+            if self.startup_mode == 'home':
                 self._home_all_motors()
+            elif self.startup_mode == 'reference_only':
+                self._sync_zero_reference()
             else:
                 self.get_logger().warn(
-                    f'[{self.arm_name}] auto_home=False: 아직 기준점이 없습니다. '
-                    f'/home 서비스를 호출하기 전에는 이동 명령을 거부합니다.'
+                    f'[{self.arm_name}] startup_mode=disabled: 좌표 reference가 아직 없습니다. '
+                    f'/sync_reference 또는 /home 실행 전에는 이동 명령을 거부합니다.'
                 )
-
         # ------------------------------------------------------------------
         # ROS interface
         # ------------------------------------------------------------------
@@ -153,6 +171,10 @@ class MotorControlNode(Node):
         self.timer = self.create_timer(timer_period, self.polling_callback)
 
         self.torque_srv = self.create_service(SetBool, 'torque', self.torque_callback)
+
+        # pose-framework hand-guiding and no-motion reference sync
+        self.teach_srv = self.create_service(SetBool, 'teach', self.teach_callback)
+        self.sync_reference_srv = self.create_service(Trigger, 'sync_reference', self.sync_reference_callback)
 
         # /set_zero: 현재 물리 위치의 0x94 값을 새로운 절대 영점으로 파일에 저장.
         self.set_zero_srv = self.create_service(Trigger, 'set_zero', self.set_zero_callback)
@@ -365,6 +387,45 @@ class MotorControlNode(Node):
                 f'[{self.arm_name}] motor {mid} 연결: {reported_model} (SN {info.get("sn", "")})'
             )
 
+    def _sync_zero_reference(self):
+        """Map saved 0x94 encoder zeros into the current 0x92 frame without motion."""
+        if self.mock_mode:
+            self.homed = True
+            for mid in self.motor_ids:
+                self.zero_92[mid] = 0.0
+            return
+
+        with self.motion_lock:
+            self.homed = False
+            mapped = {}
+            for mid in self.motor_ids:
+                motor = self.motors[mid]
+                cfg = self.motor_cfg[mid]
+                zero_single = float(cfg['zero_single_deg'])
+                period = float(cfg['loop_period_deg'])
+                ratio = float(cfg['ratio'])
+                with self.serial_lock:
+                    current_single = motor.read_single_angle()
+                    current_92 = motor.read_multi_angle()
+                delta = self._shortest_delta(zero_single, current_single, period)
+                zero_92 = current_92 + delta
+                mapped[mid] = zero_92
+                self.get_logger().info(
+                    f'[{self.arm_name}] [ID {mid}] reference sync: '
+                    f'0x94={current_single:.2f}, saved_zero={zero_single:.2f}, '
+                    f'delta={delta:+.2f} motor-deg ({delta / ratio:+.3f} output-deg), '
+                    f'zero_92={zero_92:.2f}'
+                )
+            self.zero_92.update(mapped)
+            self.homed = True
+            positions, failed = self._read_all_output_angles()
+            if failed:
+                self.homed = False
+                raise RuntimeError(f'reference sync 직후 위치 확인 실패: motor {sorted(failed)}')
+            self.get_logger().info(
+                f'[{self.arm_name}] reference sync 완료 - 물리 이동 없음. 현재 출력축 위치={positions}'
+            )
+
     def _home_all_motors(self):
         """저장된 0x94 절대 영점으로 모든 모터를 자동 복귀시킨다.
 
@@ -535,22 +596,21 @@ class MotorControlNode(Node):
         self.joint_state_pub.publish(msg)
 
     def torque_callback(self, request, response):
-        turn_on = request.data
+        """Raw arm-level torque ON/OFF. For teaching, prefer /teach."""
+        turn_on = bool(request.data)
         if self.mock_mode:
-            self.get_logger().info(f'[{self.arm_name}] [mock] torque {"ON" if turn_on else "OFF"}')
+            self.torque_enabled = turn_on
+            self.teach_mode = False
             response.success = True
             response.message = f'mock torque {"on" if turn_on else "off"}'
             return response
-
         try:
             with self.motion_lock:
                 for mid, motor in self.motors.items():
                     with self.serial_lock:
-                        if turn_on:
-                            motor.motor_on()
-                        else:
-                            motor.motor_off()
-
+                        motor.motor_on() if turn_on else motor.motor_off()
+                self.torque_enabled = turn_on
+                self.teach_mode = False
             response.success = True
             response.message = f'torque {"on" if turn_on else "off"} 완료 ({len(self.motors)}개 모터)'
             self.get_logger().info(f'[{self.arm_name}] {response.message}')
@@ -560,9 +620,77 @@ class MotorControlNode(Node):
             self.get_logger().error(f'[{self.arm_name}] {response.message}')
         return response
 
+    def teach_callback(self, request, response):
+        """True: STOP -> torque OFF. False: torque ON -> hold hand-guided current position."""
+        enable_teach = bool(request.data)
+        if self.mock_mode:
+            self.teach_mode = enable_teach
+            self.torque_enabled = not enable_teach
+            response.success = True
+            response.message = ('mock teach ON (torque OFF)' if enable_teach
+                                else 'mock teach OFF (torque ON + current HOLD)')
+            return response
+        try:
+            with self.motion_lock:
+                if enable_teach:
+                    self._stop_all_real_motors()
+                    for mid, motor in self.motors.items():
+                        with self.serial_lock:
+                            motor.motor_off()
+                    self.teach_mode = True
+                    self.torque_enabled = False
+                    response.message = (
+                        f'teach ON: torque OFF ({len(self.motors)}개 모터). '
+                        '팔을 반드시 지지한 상태에서 직접 움직이세요.'
+                    )
+                else:
+                    current_92 = {}
+                    for mid, motor in self.motors.items():
+                        with self.serial_lock:
+                            current_92[mid] = motor.read_multi_angle()
+                    for mid, motor in self.motors.items():
+                        ratio = float(self.motor_cfg[mid]['ratio'])
+                        cfg_limit = float(self.motor_cfg[mid].get('max_speed_dps', self.default_max_speed_dps))
+                        hold_speed_out = min(max(self.teach_hold_speed_dps, 0.1), cfg_limit, self.default_max_speed_dps)
+                        with self.serial_lock:
+                            motor.motor_on()
+                            motor.move_to_frame_angle(current_92[mid], hold_speed_out * ratio)
+                    self.teach_mode = False
+                    self.torque_enabled = True
+                    response.message = f'teach OFF: torque ON + current-position HOLD ({len(self.motors)}개 모터)'
+            response.success = True
+            self.get_logger().warn(f'[{self.arm_name}] {response.message}')
+        except Exception as e:
+            if not self.mock_mode:
+                for mid, motor in self.motors.items():
+                    try:
+                        with self.serial_lock:
+                            motor.motor_off()
+                    except Exception:
+                        pass
+            self.torque_enabled = False
+            self.teach_mode = True
+            response.success = False
+            response.message = f'teach 전환 실패: {e}; 안전 fallback으로 전체 torque OFF 시도'
+            self.get_logger().error(f'[{self.arm_name}] {response.message}')
+        return response
+
+    def sync_reference_callback(self, request, response):
+        try:
+            self._sync_zero_reference()
+            response.success = True
+            response.message = f'reference sync 완료 - 물리 이동 없음 (motor_ids={self.motor_ids})'
+        except Exception as e:
+            response.success = False
+            response.message = f'reference sync 실패: {e}'
+            self.get_logger().error(f'[{self.arm_name}] {response.message}')
+        return response
+
     def home_callback(self, request, response):
         """저장된 절대 엔코더 영점으로 다시 자동 homing한다."""
         try:
+            if self.teach_mode or not self.torque_enabled:
+                raise RuntimeError('teach/torque OFF 상태에서는 home을 실행할 수 없습니다.')
             self._home_all_motors()
             response.success = True
             response.message = f'home 완료 (motor_ids={self.motor_ids})'
@@ -655,6 +783,13 @@ class MotorControlNode(Node):
             result.success = False
             result.timeout = False
             result.error_message = '아직 homing되지 않았습니다. /home을 먼저 실행하세요.'
+            goal_handle.abort()
+            return result
+
+        if self.teach_mode or not self.torque_enabled:
+            result.success = False
+            result.timeout = False
+            result.error_message = 'teach mode 또는 torque OFF 상태에서는 이동할 수 없습니다.'
             goal_handle.abort()
             return result
 
