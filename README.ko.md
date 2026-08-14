@@ -4,20 +4,22 @@
 
 > LK-TECH RS485 서보모터 기반 8자유도 양팔 로봇팔을 기존 단독 Python 제어 스크립트에서 **ROS2 Humble** 구조로 전환하는 프로젝트입니다. 이미 검증된 저수준 모터 통신 로직은 유지하고, 그 위에 ROS2 제어 계층을 구축하고 있습니다.
 
-**상태: 🚧 In Progress** — Raspberry Pi 4 + LC529 + MG5010E-i10(ID 4) 단일 실물 모터 기준으로 통신, 절대엔코더 자동 Homing, ROS2 목표각 이동, persistent `arm_cli` 저지연 명령 경로까지 실물 검증 완료했습니다. 다중 모터 및 최종 8축 통합은 아직 진행 전입니다.
+**상태: 🚧 In Progress** — Raspberry Pi 4 + LC529의 단일 RS485 bus에서 ID 1, 2, 4 3축 동시 검색, 절대엔코더 자동 Homing, ROS2 목표각 이동, synchronized arrival까지 실물 검증 완료했습니다. 최종 i10/i36 혼합 8축 및 양팔 통합은 아직 진행 전입니다.
 
 ---
 
 ## 실물 검증 완료 항목
 
-**2026-08-12 기준** 다음 실물 경로를 벤치에서 검증했습니다.
+**2026-08-14 기준** 다음 실물 경로를 Raspberry Pi에서 검증했습니다.
 
 ```text
 Raspberry Pi 4
    ↓ USB
-LC529 USB-RS485
-   ↓ RS485
-MG5010E-i10 (ID 4)
+LC529 USB-RS485 (`/dev/ttyUSB0`, 115200 baud)
+   ↓ single RS485 bus
+├── MG4010E-i10 (ID 1)
+├── MG4010E-i10 (ID 2)
+└── MG5010E-i10 (ID 4)
    ↓
 외부 24 V 모터 전원
 ```
@@ -26,26 +28,27 @@ MG5010E-i10 (ID 4)
 
 - [x] Raspberry Pi 4에 Ubuntu 22.04 + ROS2 Humble 구성
 - [x] LC529 `/dev/ttyUSB0` 인식
-- [x] 모터 ID 스캔 / 모델 응답 확인
+- [x] `scan_ids`로 ID 1, 2, 4 동시 검색 및 모델 응답 확인
 - [x] 실제 모터 상태값 및 각도 읽기
-- [x] 절대엔코더 기반 자동 Homing
-- [x] ROS2 `MoveJoint` Action 목표각 이동
+- [x] ID 1, 2, 4 3축 절대엔코더 기반 자동 Homing
+- [x] ID 1, 2, 4 3축 ROS2 `MoveJoint` Action 목표각 이동
 - [x] persistent `arm_cli` ActionClient를 통한 명령 시작 지연 감소
 - [x] 이동 완료 → 다음 명령 순차 제어
+- [x] 가장 오래 걸리는 축에 맞춘 3축 synchronized arrival
 - [ ] 이전 이동 중 새 목표를 덮어쓰는 preemption
-- [ ] 다중 모터 제어
 - [ ] 좌/우 독립 RS485 2버스 검증
 - [ ] 전체 8모터 통합
 
-현재 실물 검증 모터:
+현재 실물 검증 구성:
 
 ```text
-모델        : MG5010E-i10
-Motor ID    : 4
-Serial      : U34 P06[
-포트        : /dev/ttyUSB0
-테스트 전압 : 약 23.9 V
-Error state : 0
+포트      : /dev/ttyUSB0
+Baudrate  : 115200
+ID 1      : MG4010E-i10
+ID 2      : MG4010E-i10
+ID 4      : MG5010E-i10
+감속비    : 세 모터 모두 10:1
+논리 주기 : 세 모터 모두 3600 motor-deg
 ```
 
 ---
@@ -89,9 +92,9 @@ Raspberry Pi와 LC529는 **통신만 담당**합니다. 모터 구동용 24 V �
 - MG5010E-i36 ×4
 - MG4010E-i10 ×4
 - 총 8모터
-- 팔당 독립 RS485 bus 1개
+- 왼팔/오른팔 각각 LC529 1개, 총 독립 RS485 bus 2개
 
-> 현재 벤치 테스트 모터는 **MG5010E-i10**입니다. 최종 MG5010은 i36 예정이므로 감속비는 코드에서 설정 가능하게 유지해야 합니다.
+> 현재 벤치 구성은 **MG4010E-i10 ×2 + MG5010E-i10 ×1**입니다. 최종 MG5010은 i36 예정이므로 감속비는 모터별로 설정 가능하게 유지해야 합니다.
 
 ---
 
@@ -112,7 +115,7 @@ Raspberry Pi와 LC529는 **통신만 담당**합니다. 모터 구동용 24 V �
    MoveIt2 / RViz  (예정)
 ```
 
-현재 단일 모터 실물 벤치 테스트에서는 다음 Action을 사용합니다.
+현재 3축 실물 벤치 테스트에서는 다음 Action을 사용합니다.
 
 ```text
 /test_arm/move_to
@@ -163,7 +166,7 @@ bool settled
 - `0x92` — 현재 전원 세션에서 누적/추적되는 이동 frame
 - `0xA4` — 실제 이동 명령. target은 `0x92`와 같은 frame이어야 함
 
-현재 i10 테스트 모터 기준:
+현재 ID 1, 2, 4 i10 테스트 모터 기준:
 
 ```text
 감속비        = 10.0
@@ -211,6 +214,8 @@ target_0x92 = zero_92 + target_output_angle * reduction_ratio
 
 ### 실물 Homing 검증 결과
 
+기존 Python 실물 테스트에서 생성한 `zero_config_i10_verified.json`의 모터별 절대 영점값을 ROS2에서 그대로 읽어, ID 1, 2, 4의 3축 자동 Homing에 성공했습니다. 아래 값은 그중 기존 ID 4 단일 모터 검증 기록입니다.
+
 현재 ID 4 테스트 모터의 저장된 영점:
 
 ```text
@@ -252,12 +257,12 @@ ros2 action send_goal ...
 ros2 run motor_control_pkg arm_cli
 ```
 
-한 번 연결된 뒤에는:
+한 번 연결된 뒤에는 ID 1, 2, 4의 목표각과 속도 상한을 입력합니다.
 
 ```text
-arm> 10 5
-arm> -20 30
-arm> 0 10
+arm> 10 0 0 10
+arm> 10 -10 20 20
+arm> 0 0 0 10
 ```
 
 처럼 명령만 계속 입력합니다.
@@ -265,21 +270,25 @@ arm> 0 10
 입력 형식:
 
 ```text
-목표각(deg)  최대속도(deg/s)
+ID1_angle  ID2_angle  ID4_angle  speed
 ```
 
 예:
 
 ```text
-arm> 10 5
+arm> 10 -10 20 20
 ```
 
 의 의미:
 
 ```text
-목표 출력각 = +10°
-최대 속도   = 5°/s
+ID 1 목표 출력각 = +10°
+ID 2 목표 출력각 = -10°
+ID 4 목표 출력각 = +20°
+속도 상한         = 20°/s
 ```
+
+CLI의 `speed`는 모든 축에 그대로 강제되는 속도가 아니라 **각 축의 속도 상한**입니다. `motor_control_node`는 가장 오래 걸리는 축의 예상 이동시간을 기준으로 나머지 축 속도를 낮춰, 세 축이 거의 동시에 도착하도록 실제 축별 속도를 계산합니다. 이 synchronized-arrival 로직도 3축 실물에서 정상 동작을 확인했습니다.
 
 ### 실물 latency 결과
 
@@ -333,13 +342,13 @@ ros2 run motor_control_pkg check_home --id 4 --port /dev/ttyUSB0
 
 `check_home`은 Homing 예상 delta/target만 계산하고 **모터 이동 명령은 보내지 않습니다.**
 
-### 4. 현재 단일 실물 모터 실행
+### 4. 현재 3축 실물 모터 실행
 
 ```bash
-ros2 launch motor_control_pkg single_motor_id4_real.launch.py
+ros2 launch motor_control_pkg three_motor_real.launch.py
 ```
 
-실행 시 저장된 절대 영점 기준으로 자동 Homing을 수행합니다.
+실행 시 `zero_config_i10_verified.json`에 저장된 각 모터의 절대 영점 기준으로 ID 1, 2, 4를 자동 Homing합니다.
 
 ### 5. Persistent CLI 실행
 
@@ -353,9 +362,9 @@ ros2 run motor_control_pkg arm_cli
 입력:
 
 ```text
-arm> 10 5
-arm> 20 30
-arm> 0 10
+arm> 10 0 0 10
+arm> 10 -10 20 20
+arm> 0 0 0 10
 ```
 
 ### 6. 직접 Action 테스트
@@ -364,7 +373,7 @@ arm> 0 10
 
 ```bash
 ros2 action send_goal /test_arm/move_to iroi_interfaces/action/MoveJoint \
-  "{target_angles: [10.0], max_speeds: [5.0]}" --feedback
+  "{target_angles: [10.0, -10.0, 20.0], max_speeds: [20.0, 20.0, 20.0]}" --feedback
 ```
 
 반복 제어 테스트에서는 새 client를 매번 띄우지 않는 `arm_cli` 사용을 권장합니다.
@@ -379,7 +388,8 @@ iroi_ws/src/
 │   ├── config/
 │   ├── launch/
 │   │   ├── dual_arm.launch.py
-│   │   └── single_motor_id4_real.launch.py
+│   │   ├── single_motor_id4_real.launch.py
+│   │   └── three_motor_real.launch.py
 │   ├── motor_control_pkg/
 │   │   ├── __init__.py
 │   │   ├── lk_motor.py
@@ -472,9 +482,14 @@ source install/setup.bash
 - [x] persistent `arm_cli`를 통한 명령 시작 지연 감소
 - [x] 이동 완료 → 다음 명령 순차 동작 확인
 - [ ] 이동 중 새 목표를 받는 preemption / non-blocking 제어
-- [ ] 한 RS485 bus에서 다중 모터 검증
+- [x] 한 RS485 bus에서 다중 모터 검증
+- [ ] 새 모터별 ID ↔ joint 매핑
+- [ ] 각 새 모터의 절대 영점 재캘리브레이션 (`0x94`, encoder, raw); 기존 모터 영점값은 새 모터에 재사용하지 않음
+- [ ] MG5010E-i36 실물 ratio / wrap 검증
+- [ ] mixed i10/i36에서 공통 fallback이 아닌 각 motor config의 `ratio`, `loop_period_deg`가 ratio-dependent 계산에 사용되는지 검증
+- [ ] 개별 모터 → 한 팔 4축 → 양팔 8축 순차 검증
 - [ ] 좌/우 2개 RS485 bus 검증
-- [ ] 전체 8모터 통합
+- [ ] 최종 left/right arm launch 및 dual-arm 8축 통합
 - [ ] 실제 RS485 timing 기반 polling rate 조정
 - [ ] 30분 이상 안정성 테스트
 - [ ] MoveIt2 / RViz 연동

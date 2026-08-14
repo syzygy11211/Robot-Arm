@@ -4,20 +4,22 @@
 
 > ROS2 (Humble) motor-control stack for an 8-DOF dual-arm robot using LK-TECH RS485 servo motors. The project is being migrated from a standalone Python control script to a ROS2 architecture while preserving the already-validated low-level motor protocol layer.
 
-**Status: 🚧 In Progress** — Single-motor real-hardware validation is complete on Raspberry Pi 4 + LC529 + MG5010E-i10 (ID 4). Absolute-encoder automatic homing, ROS2 target-angle motion, and a persistent low-latency command client have all been verified. Multi-motor / full 8-DOF integration is still pending.
+**Status: 🚧 In Progress** — Three-axis operation on one Raspberry Pi 4 + LC529 RS485 bus is hardware-verified for IDs 1, 2, and 4, including simultaneous discovery, absolute-encoder automatic homing, ROS2 target-angle motion, and synchronized arrival. Final mixed-i10/i36 8-axis dual-arm integration is still pending.
 
 ---
 
 ## Verified on Real Hardware
 
-As of **2026-08-12**, the following path has been verified on the bench:
+As of **2026-08-14**, the following path has been verified on a Raspberry Pi:
 
 ```text
 Raspberry Pi 4
    ↓ USB
-LC529 USB-RS485
-   ↓ RS485
-MG5010E-i10 (ID 4)
+LC529 USB-RS485 (`/dev/ttyUSB0`, 115200 baud)
+   ↓ single RS485 bus
+├── MG4010E-i10 (ID 1)
+├── MG4010E-i10 (ID 2)
+└── MG5010E-i10 (ID 4)
    ↓
 External 24 V motor supply
 ```
@@ -26,26 +28,27 @@ Verified items:
 
 - [x] Ubuntu 22.04 + ROS2 Humble on Raspberry Pi 4
 - [x] LC529 detected as `/dev/ttyUSB0`
-- [x] Motor ID scan and model read
+- [x] Simultaneous ID 1, 2, and 4 discovery and model reads with `scan_ids`
 - [x] Real motor state / angle reads
-- [x] Absolute-encoder-based automatic homing
-- [x] ROS2 `MoveJoint` Action target-angle motion
+- [x] Absolute-encoder-based automatic homing of IDs 1, 2, and 4
+- [x] Three-axis ROS2 `MoveJoint` Action target-angle motion for IDs 1, 2, and 4
 - [x] Persistent `arm_cli` ActionClient with substantially reduced command-start latency
 - [x] Sequential move-complete → next-command operation
+- [x] Three-axis synchronized arrival based on the longest-moving axis
 - [ ] Command preemption while a previous move is still in progress
-- [ ] Multi-motor validation
 - [ ] Dual RS485 bus validation
 - [ ] Full 8-motor integration
 
-Current verified motor:
+Current verified configuration:
 
 ```text
-Model       : MG5010E-i10
-Motor ID    : 4
-Serial      : U34 P06[
-Bus         : /dev/ttyUSB0
-Supply      : ~23.9 V during test
-Error state : 0
+Port           : /dev/ttyUSB0
+Baudrate       : 115200
+ID 1           : MG4010E-i10
+ID 2           : MG4010E-i10
+ID 4           : MG5010E-i10
+Reduction ratio: 10:1 for all three test motors
+Logical period : 3600 motor-deg for all three test motors
 ```
 
 ---
@@ -89,9 +92,9 @@ Target motor configuration:
 - MG5010E-i36 ×4
 - MG4010E-i10 ×4
 - Total: 8 motors
-- One independent RS485 bus per arm
+- One LC529 per arm, for two independent RS485 buses total
 
-> The current bench motor is an **MG5010E-i10**. The final MG5010 units are planned to use the i36 reduction ratio, so reduction-ratio handling must remain configurable.
+> The current bench setup is **two MG4010E-i10 motors plus one MG5010E-i10**. The final MG5010 units are planned to use i36 gearing, so the reduction ratio must remain configurable per motor.
 
 ---
 
@@ -112,7 +115,7 @@ The same `motor_control_node` is intended to run once per arm with different par
    MoveIt2 / RViz  (planned)
 ```
 
-The current single-motor bench launch uses:
+The current three-axis bench launch uses:
 
 ```text
 /test_arm/move_to
@@ -163,7 +166,7 @@ Instead, a physical zero is calibrated and stored once. On startup, the motor us
 - `0x92` — accumulated/session angle used for continuous tracking and motion commands
 - `0xA4` — move command; target must be expressed in the `0x92` frame
 
-For the current i10 bench motor:
+For the current ID 1, 2, and 4 i10 bench motors:
 
 ```text
 reduction ratio = 10.0
@@ -209,6 +212,8 @@ target_0x92 = zero_92 + target_output_angle * reduction_ratio
 
 ### Real-hardware homing result
 
+ROS2 successfully reused the per-motor absolute zero values from `zero_config_i10_verified.json`, originally produced during the standalone Python hardware tests, to automatically home IDs 1, 2, and 4. The values below preserve the earlier detailed result for ID 4.
+
 Saved zero for the current ID 4 test motor:
 
 ```text
@@ -246,32 +251,36 @@ To remove that overhead during testing, a persistent client was added:
 ros2 run motor_control_pkg arm_cli
 ```
 
-It connects once and keeps the same ActionClient alive:
+It connects once and accepts targets for IDs 1, 2, and 4 plus a speed limit:
 
 ```text
-arm> 10 5
-arm> -20 30
-arm> 0 10
+arm> 10 0 0 10
+arm> 10 -10 20 20
+arm> 0 0 0 10
 ```
 
 Format:
 
 ```text
-target_angle_deg  max_speed_deg_per_sec
+ID1_angle  ID2_angle  ID4_angle  speed
 ```
 
 Example:
 
 ```text
-arm> 10 5
+arm> 10 -10 20 20
 ```
 
 means:
 
 ```text
-target = +10°
-speed  = 5°/s
+ID 1 target = +10°
+ID 2 target = -10°
+ID 4 target = +20°
+speed limit = 20°/s
 ```
+
+The CLI `speed` is an upper bound for each axis, not a speed forced equally on every motor. `motor_control_node` uses the longest predicted axis duration and reduces the other axes' speeds so all three arrive nearly together. This existing synchronized-arrival logic has now been verified on the three-axis hardware setup.
 
 ### Real-hardware latency result
 
@@ -320,13 +329,13 @@ ros2 run motor_control_pkg check_home --id 4 --port /dev/ttyUSB0
 
 `check_home` calculates the expected homing target without sending a move command.
 
-### 4. Run the current real single-motor test
+### 4. Run the current real three-motor test
 
 ```bash
-ros2 launch motor_control_pkg single_motor_id4_real.launch.py
+ros2 launch motor_control_pkg three_motor_real.launch.py
 ```
 
-This starts the real motor node and performs automatic homing using the stored absolute zero.
+This starts the real motor node and automatically homes IDs 1, 2, and 4 from their absolute zeros in `zero_config_i10_verified.json`.
 
 ### 5. Start the persistent test CLI
 
@@ -340,9 +349,9 @@ ros2 run motor_control_pkg arm_cli
 Then:
 
 ```text
-arm> 10 5
-arm> 20 30
-arm> 0 10
+arm> 10 0 0 10
+arm> 10 -10 20 20
+arm> 0 0 0 10
 ```
 
 ### 6. Direct Action test
@@ -351,7 +360,7 @@ For one-off debugging:
 
 ```bash
 ros2 action send_goal /test_arm/move_to iroi_interfaces/action/MoveJoint \
-  "{target_angles: [10.0], max_speeds: [5.0]}" --feedback
+  "{target_angles: [10.0, -10.0, 20.0], max_speeds: [20.0, 20.0, 20.0]}" --feedback
 ```
 
 For repeated testing, `arm_cli` is preferred because it avoids repeatedly creating a new ROS2 Action client.
@@ -366,7 +375,8 @@ iroi_ws/src/
 │   ├── config/
 │   ├── launch/
 │   │   ├── dual_arm.launch.py
-│   │   └── single_motor_id4_real.launch.py
+│   │   ├── single_motor_id4_real.launch.py
+│   │   └── three_motor_real.launch.py
 │   ├── motor_control_pkg/
 │   │   ├── __init__.py
 │   │   ├── lk_motor.py
@@ -455,9 +465,14 @@ Rule: **always build from `~/iroi_ws`, never from `~/iroi_ws/src`.**
 - [x] Persistent `arm_cli` with reduced command-start latency
 - [x] Sequential move-complete → next-command validation
 - [ ] Motion preemption / non-blocking target updates
-- [ ] Multi-motor validation on one RS485 bus
+- [x] Multi-motor validation on one RS485 bus
+- [ ] Map each new motor ID to its joint
+- [ ] Recalibrate every new motor's absolute zero (`0x94`, encoder, raw); never reuse an existing motor's zero values for a new motor
+- [ ] Validate the MG5010E-i36 ratio and wrap behavior on hardware
+- [ ] In mixed i10/i36 operation, verify that ratio-dependent calculations use each motor config's `ratio` and `loop_period_deg`, not a shared fallback
+- [ ] Validate in stages: individual motors → one 4-axis arm → both 8-axis arms
 - [ ] Left/right dual-bus validation
-- [ ] Full 8-motor integration
+- [ ] Final left/right arm launches and dual-arm 8-axis integration
 - [ ] Tune polling rate from real RS485 timing measurements
 - [ ] 30+ minute stability test
 - [ ] MoveIt2 / RViz integration
