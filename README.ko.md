@@ -2,20 +2,22 @@
 
 # iROI — Dual-Arm Robot ROS2 Motor Control
 
-> LK-TECH RS485 서보모터 기반 8자유도 양팔 로봇팔을 기존 단독 Python 제어 스크립트에서 **ROS2 Humble** 구조로 전환하는 프로젝트입니다. 이미 검증된 저수준 모터 통신 로직은 유지하고, 그 위에 ROS2 제어 계층을 구축하고 있습니다.
+> LK-TECH RS485 서보모터 기반 8자유도 양팔 로봇팔 제어 프로젝트입니다. 기존에 실물 검증한 저수준 모터 프로토콜은 유지하고, 그 위에 ROS2 Humble 기반 다축 제어, pose 저장/재생, startup pose, teach mode 계층을 추가하고 있습니다.
 
-**상태: 🚧 In Progress** — Raspberry Pi 4 + LC529의 단일 RS485 bus에서 ID 1, 2, 4 3축 동시 검색, 절대엔코더 자동 Homing, ROS2 목표각 이동, synchronized arrival까지 실물 검증 완료했습니다. 최종 i10/i36 혼합 8축 및 양팔 통합은 아직 진행 전입니다.
+**상태: 🚧 In Progress** — Raspberry Pi 4 + LC529 기반 ID 1, 2, 4 3축 실물 제어는 검증 완료했습니다. 새로 추가한 8축 pose/teach framework는 ROS2 mock mode에서 검증했습니다. 최종 i10/i36 혼합 8모터 실물 통합, 각 모터별 calibration, pose/teach 실물 검증은 아직 진행 전입니다.
 
 ---
 
-## 실물 검증 완료 항목
+## 현재 검증 상태
 
-**2026-08-14 기준** 다음 실물 경로를 Raspberry Pi에서 검증했습니다.
+### 실물 하드웨어 — 검증 완료
+
+**2026-08-14 기준** 다음 실물 경로를 검증했습니다.
 
 ```text
 Raspberry Pi 4
    ↓ USB
-LC529 USB-RS485 (`/dev/ttyUSB0`, 115200 baud)
+LC529 USB-RS485 (/dev/ttyUSB0, 115200 baud)
    ↓ single RS485 bus
 ├── MG4010E-i10 (ID 1)
 ├── MG4010E-i10 (ID 2)
@@ -24,55 +26,58 @@ LC529 USB-RS485 (`/dev/ttyUSB0`, 115200 baud)
 외부 24 V 모터 전원
 ```
 
-검증 상태:
+검증 완료 항목:
 
-- [x] Raspberry Pi 4에 Ubuntu 22.04 + ROS2 Humble 구성
-- [x] LC529 `/dev/ttyUSB0` 인식
-- [x] `scan_ids`로 ID 1, 2, 4 동시 검색 및 모델 응답 확인
-- [x] 실제 모터 상태값 및 각도 읽기
-- [x] ID 1, 2, 4 3축 절대엔코더 기반 자동 Homing
-- [x] ID 1, 2, 4 3축 ROS2 `MoveJoint` Action 목표각 이동
-- [x] persistent `arm_cli` ActionClient를 통한 명령 시작 지연 감소
+- [x] Raspberry Pi 4 + Ubuntu 22.04 + ROS2 Humble
+- [x] LC529 `/dev/ttyUSB0` 통신
+- [x] ID 1, 2, 4 동시 검색 및 모델 응답 확인
+- [x] 실물 모터 상태값/각도 읽기
+- [x] ID 1, 2, 4 절대엔코더 기반 자동 Homing
+- [x] ROS2 `MoveJoint` Action 목표각 이동
+- [x] persistent `arm_cli` 저지연 명령
 - [x] 이동 완료 → 다음 명령 순차 제어
-- [x] 가장 오래 걸리는 축에 맞춘 3축 synchronized arrival
-- [ ] 이전 이동 중 새 목표를 덮어쓰는 preemption
-- [ ] 좌/우 독립 RS485 2버스 검증
-- [ ] 전체 8모터 통합
+- [x] 가장 오래 걸리는 축 기준 3축 synchronized arrival
+- [ ] 최종 좌/우 2개 RS485 bus 실물 검증
+- [ ] 최종 8모터 실물 통합
 
-현재 실물 검증 구성:
+현재 검증된 calibration 파일:
 
 ```text
-포트      : /dev/ttyUSB0
-Baudrate  : 115200
-ID 1      : MG4010E-i10
-ID 2      : MG4010E-i10
-ID 4      : MG5010E-i10
-감속비    : 세 모터 모두 10:1
-논리 주기 : 세 모터 모두 3600 motor-deg
+motor_control_pkg/config/zero_config_i10_verified.json
 ```
 
----
+현재 벤치 모터는 모두 **감속비 10:1**, **논리 주기 3600 motor-deg** 기준입니다. 최종 MG5010은 i36 예정이므로 감속비와 wrap 관련 값은 모터별 config에서 관리합니다.
 
-## Why ROS2?
+### 8축 pose/teach framework — mock 검증 완료
 
-기존에는 단독 Python 스크립트(`motor_control.py`)에서 파일 기반 명령 전달(`target_batch.json` polling)을 직접 구현했습니다. 하지만 모터와 팔 개수가 늘어날수록 타이밍, 동시성, 재시작 처리, 다중 모터 동기 이동을 모두 직접 관리해야 했습니다.
-
-ROS2에서는 이를 표준 구조로 나눌 수 있습니다.
-
-- **Topic**: 지속적인 관절 상태 publish
-- **Service**: 토크 On/Off, 영점 캘리브레이션 같은 단발 명령
-- **Action**: 목표각 이동 + feedback + 완료 결과
-- Namespace / launch: 왼팔·오른팔 독립 실행
-- 향후 MoveIt2 / RViz 연동 가능
-
-이미 실물에서 검증된 저수준 RS485 드라이버(`lk_motor.py`)는 유지하고, ROS2를 그 위의 orchestration/control 계층으로 추가하는 방식입니다.
-
----
-
-## 최종 목표 시스템 구조
+Raspberry Pi의 ROS2 mock mode에서 다음 구조를 검증했습니다.
 
 ```text
-노트북 (개발 / 원격 제어)
+왼팔  : ID 1, 2, 3, 4
+오른팔: ID 5, 6, 7, 8
+```
+
+mock 검증 완료 항목:
+
+- [x] 좌/우 namespace 기반 8축 startup
+- [x] ID 1..8 고정 pose database
+- [x] 미측정 값 `null` 처리
+- [x] Pose 0 (`attention`) startup 예약 pose
+- [x] pose 저장 / 목록 / 상세 조회 / 재생
+- [x] 8축 상태 조회
+- [x] Teach ON → torque OFF
+- [x] Teach mode / torque OFF 상태에서 이동 명령 차단
+- [x] Teach OFF → torque ON + 현재 위치 HOLD
+- [x] Pose 0이 전부 `null`일 때 이동 없이 현재 위치 유지
+
+**주의:** pose/teach framework는 아직 최종 실물 8모터 로봇팔에서 검증하지 않았습니다.
+
+---
+
+## 최종 하드웨어 구조
+
+```text
+노트북 / 개발 PC
    │
    │ SSH / ROS2 tooling
    ▼
@@ -85,52 +90,51 @@ Raspberry Pi 4
    └── 오른팔 4모터 병렬 공급
 ```
 
-Raspberry Pi와 LC529는 **통신만 담당**합니다. 모터 구동용 24 V 전력은 Pi 전원 계통과 분리합니다.
-
-현재 최종 하드웨어 계획:
+최종 모터 구성:
 
 - MG5010E-i36 ×4
 - MG4010E-i10 ×4
 - 총 8모터
-- 왼팔/오른팔 각각 LC529 1개, 총 독립 RS485 bus 2개
+- 팔당 LC529 1개
+- 좌/우 독립 RS485 bus 총 2개
 
-> 현재 벤치 구성은 **MG4010E-i10 ×2 + MG5010E-i10 ×1**입니다. 최종 MG5010은 i36 예정이므로 감속비는 모터별로 설정 가능하게 유지해야 합니다.
+Raspberry Pi와 LC529는 통신/제어만 담당합니다. 모터 구동용 24 V 전력은 Pi 전원 계통과 분리합니다.
 
 ---
 
-## ROS2 노드 구조
+## ROS2 제어 구조
 
-동일한 `motor_control_node`를 왼팔/오른팔에 각각 실행하고 namespace와 parameter만 다르게 적용하는 구조입니다.
-
-```text
-[left_arm]  motor_control_node
-[right_arm] motor_control_node
-        │
-        ├── Topic   /{arm}/joint_states
-        ├── Service /{arm}/torque
-        ├── Service /{arm}/set_zero
-        └── Action  /{arm}/move_to
-        │
-        ▼
-   MoveIt2 / RViz  (예정)
-```
-
-현재 3축 실물 벤치 테스트에서는 다음 Action을 사용합니다.
+동일한 `motor_control_node`를 왼팔/오른팔에 각각 실행하고 namespace와 motor ID 목록만 다르게 적용합니다.
 
 ```text
-/test_arm/move_to
+[left_arm]  motor_control_node ── ID 1,2,3,4
+[right_arm] motor_control_node ── ID 5,6,7,8
+
+        │
+        ├── Topic    /{arm}/joint_states
+        ├── Service  /{arm}/torque
+        ├── Service  /{arm}/teach
+        ├── Service  /{arm}/sync_reference
+        ├── Service  /{arm}/set_zero
+        ├── Service  /{arm}/home
+        └── Action   /{arm}/move_to
 ```
+
+저수준 RS485 드라이버 `lk_motor.py`는 그대로 유지합니다. ROS2는 그 위에서 상태 publish, Service, 다축 Action, pose 실행을 담당합니다.
 
 ---
 
 ## ROS2 Interfaces
 
-| 종류 | 이름 | 타입 | 설명 |
+| 종류 | 이름 | 타입 | 역할 |
 |---|---|---|---|
-| Topic | `/{arm}/joint_states` | `sensor_msgs/JointState` | 관절 각도 publish |
-| Service | `/{arm}/torque` | `std_srvs/SetBool` | 모터 토크 On/Off |
-| Service | `/{arm}/set_zero` | `std_srvs/Trigger` | 물리 영점 기준을 캘리브레이션하고 저장. 매 부팅마다 현재 위치를 새 영점으로 만드는 용도가 아님 |
-| Action | `/{arm}/move_to` | `iroi_interfaces/action/MoveJoint` | 목표각 이동 + feedback/result |
+| Topic | `/{arm}/joint_states` | `sensor_msgs/JointState` | calibration 기준 출력축 관절각 publish |
+| Service | `/{arm}/torque` | `std_srvs/SetBool` | 저수준 팔 단위 torque ON/OFF |
+| Service | `/{arm}/teach` | `std_srvs/SetBool` | hand-guiding용 teach mode 전환 |
+| Service | `/{arm}/sync_reference` | `std_srvs/Trigger` | 물리 이동 없이 현재 세션의 0x92 기준 복원 |
+| Service | `/{arm}/set_zero` | `std_srvs/Trigger` | 물리 encoder zero 재캘리브레이션 및 저장 |
+| Service | `/{arm}/home` | `std_srvs/Trigger` | 저장된 encoder zero 위치로 실제 이동 |
+| Action | `/{arm}/move_to` | `iroi_interfaces/action/MoveJoint` | 다축 목표각 이동 + feedback/result |
 
 `MoveJoint.action`:
 
@@ -150,162 +154,236 @@ float64[] errors
 bool settled
 ```
 
-주의: 속도 필드명은 **`max_speeds`** 복수형입니다.
+`max_speeds` 단위는 출력축 기준 deg/s입니다.
 
 ---
 
-## 절대엔코더 기반 Homing
+## Encoder Calibration과 Pose의 분리
 
-이 프로젝트는 **부팅할 때 현재 위치를 0점으로 잡는 방식이 아닙니다.**
+이 프로젝트에서는 **모터 calibration**과 **로봇 pose**를 완전히 분리합니다.
 
-물리적인 0점 위치를 한 번 캘리브레이션해서 저장하고, 이후 전원이 다시 들어오면 절대엔코더를 읽어 **항상 같은 물리 영점으로 자동 복귀**하는 방식입니다.
+### 1. 모터 / encoder calibration
 
-### 각도 frame
-
-- `0x94` — 저장된 물리 영점을 찾기 위한 절대각 frame
-- `0x92` — 현재 전원 세션에서 누적/추적되는 이동 frame
-- `0xA4` — 실제 이동 명령. target은 `0x92`와 같은 frame이어야 함
-
-현재 ID 1, 2, 4 i10 테스트 모터 기준:
+다음과 같은 파일에 저장합니다.
 
 ```text
-감속비        = 10.0
-논리 주기     = 3600.0 motor-deg
+zero_config_i10_verified.json
 ```
 
-### 부팅 시 Homing 흐름
+모터별 주요 값:
 
 ```text
-저장된 zero_single_deg (0x94 frame)
-        ↓
-현재 0x94 읽기
-현재 0x92 읽기
-        ↓
-shortest_delta(saved_zero, current_0x94, period)
-        ↓
-zero_92 = current_0x92 + delta
-        ↓
-move_to_frame_angle(zero_92)
-        ↓
-이번 전원 세션의 출력축 0점 기준으로 zero_92 유지
+motor_id
+ratio
+zero_single_deg
+zero_encoder
+zero_raw
+loop_period_deg
 ```
 
-최단 signed delta:
+이 값은 해당 모터의 물리 좌표계를 정의합니다. 모터를 교체하면 새 모터 기준으로 다시 calibration해야 하며, 기존 모터의 영점값을 그대로 복사해서 사용하면 안 됩니다.
 
-```python
-def shortest_delta(target, current, period):
-    half = period / 2.0
-    return (target - current + half) % period - half
-```
+### 2. 로봇 pose
 
-Homing 후 출력축 각도는 개념적으로:
+runtime pose는 별도로 저장합니다.
 
 ```text
-(current_0x92 - zero_92) / reduction_ratio
+~/.ros/arm_poses.json
 ```
 
-사용자가 요청한 출력축 목표각은:
+Pose에는 raw encoder가 아니라 **calibration된 출력축/관절각**을 저장합니다.
 
-```text
-target_0x92 = zero_92 + target_output_angle * reduction_ratio
+모든 pose는 항상 ID 1..8을 가지며, 아직 측정하지 않은 값은 JSON `null`로 저장합니다.
+
+```json
+{
+  "version": 1,
+  "poses": {
+    "0": {
+      "name": "attention",
+      "angles": {
+        "1": null,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "6": null,
+        "7": null,
+        "8": null
+      }
+    }
+  }
+}
 ```
 
-으로 변환합니다.
+Pose 0은 **차렷/startup pose**로 예약되어 있으며 삭제할 수 없습니다.
 
-### 실물 Homing 검증 결과
-
-기존 Python 실물 테스트에서 생성한 `zero_config_i10_verified.json`의 모터별 절대 영점값을 ROS2에서 그대로 읽어, ID 1, 2, 4의 3축 자동 Homing에 성공했습니다. 아래 값은 그중 기존 ID 4 단일 모터 검증 기록입니다.
-
-현재 ID 4 테스트 모터의 저장된 영점:
-
-```text
-saved zero 0x94 = 3599.98 deg
-```
-
-눈으로 Homing이 확실히 보이도록 모터 위치를 손으로 일부러 이동한 뒤 측정:
-
-```text
-current 0x94    : 728.36 deg
-current 0x92    : 728.36 deg
-saved zero 0x94 : 3599.98 deg
-homing delta    : -728.38 motor-deg
-                : -72.838 output-deg
-target zero_92  : -0.02 deg
-```
-
-실제 Homing launch 실행 후 모터가 저장된 물리 영점으로 정상 복귀했습니다.
-
-즉 **`0x94 → shortest_delta → 0x92` frame 변환 로직을 실물에서 검증 완료**했습니다.
+`version: 1`은 모터 버전이 아니라 pose 파일 형식의 버전입니다.
 
 ---
 
-## 저지연 명령 경로: `arm_cli`
+## 절대엔코더 Reference와 Startup Mode
 
-초기 테스트에서는 매번 다음 명령을 새로 실행했습니다.
+### 주요 각도 frame
 
-```bash
-ros2 action send_goal ...
-```
+- `0x94` — 전원 재인가 후에도 유지되는 절대 encoder angle
+- `0x92` — 현재 세션에서 사용하는 누적/다회전 angle
+- `0xA4` — `0x92` frame 기준 이동 명령
 
-이 방식은 명령마다 새로운 ROS2 CLI 프로세스와 Action client를 생성하므로 discovery/연결 과정 때문에 첫 동작 시작까지 체감 지연이 있었습니다.
-
-이를 줄이기 위해 persistent ActionClient를 유지하는 `arm_cli.py`를 추가했습니다.
-
-실행:
-
-```bash
-ros2 run motor_control_pkg arm_cli
-```
-
-한 번 연결된 뒤에는 ID 1, 2, 4의 목표각과 속도 상한을 입력합니다.
+calibration된 출력축 각도는 개념적으로 다음과 같습니다.
 
 ```text
-arm> 10 0 0 10
-arm> 10 -10 20 20
-arm> 0 0 0 10
+output_angle = (current_0x92 - zero_92) / reduction_ratio
 ```
 
-처럼 명령만 계속 입력합니다.
+### `home` mode
 
-입력 형식:
+기존 실물 검증 방식:
 
 ```text
-ID1_angle  ID2_angle  ID4_angle  speed
+저장된 0x94 zero 읽기
+        ↓
+현재 0x94 + 현재 0x92 읽기
+        ↓
+shortest_delta(...)
+        ↓
+저장된 zero를 현재 0x92 frame에 매핑
+        ↓
+실제로 해당 zero 위치까지 이동
+```
+
+현재 실물 검증 fallback launch:
+
+```bash
+ros2 launch motor_control_pkg three_motor_real.launch.py
+```
+
+### `reference_only` mode
+
+새 pose framework에서는 좌표계 복원과 물리 Homing을 분리합니다.
+
+```text
+저장된 0x94 zero 읽기
+        ↓
+현재 0x94 + 현재 0x92 읽기
+        ↓
+zero_92 계산
+        ↓
+calibration된 joint 좌표계 복원
+        ↓
+encoder zero로는 이동하지 않음
+        ↓
+startup node가 Pose 0 실행 시도
+```
+
+따라서 최종적으로는 전원을 켰을 때 encoder zero를 먼저 찍고 오는 대신, 현재 위치에서 좌표계만 복원한 후 **Pose 0(차렷)** 으로 바로 이동하게 됩니다.
+
+개발용 launch:
+
+```bash
+ros2 launch motor_control_pkg three_motor_pose_framework.launch.py
+```
+
+이 launch는 ID 1, 2, 4 기준으로 틀을 준비해둔 상태이며 **아직 실물 검증하지 않았습니다.** 현재 Pose 0이 전부 `null`이므로 실제 pose 값이 저장되기 전에는 startup pose 이동이 없어야 정상입니다.
+
+---
+
+## Pose Framework
+
+### Pose Manager
+
+`pose_manager.py`가 8축 pose 저장을 담당합니다.
+
+규칙:
+
+- 항상 ID 1..8 존재
+- 미측정 값은 `null`
+- Pose 0은 항상 존재
+- Pose 0 삭제 금지
+- pose file version 검사
+- atomic write 방식으로 저장
+
+### Pose CLI
+
+8축 CLI 실행:
+
+```bash
+ros2 run motor_control_pkg arm_pose_cli --ros-args -p mode:=dual
+```
+
+명령:
+
+```text
+pose <ID> [speed]       저장된 pose로 이동
+save <ID> [name]        현재 8축 관절값 저장
+list                    pose 목록
+show <ID>               pose 상세
+delete <ID>             pose 삭제 (Pose 0 삭제 불가)
+teach <target> on       Teach ON = torque OFF
+teach <target> off      Teach OFF = torque ON + 현재 위치 HOLD
+torque <target> on/off  raw torque 제어
+status                  현재 8축 상태
+help
+q | quit | exit
+```
+
+target:
+
+```text
+test / left / right / all
 ```
 
 예:
 
 ```text
-arm> 10 -10 20 20
+arm> save 1 wave
+arm> show 1
+arm> pose 1 20
+arm> teach left on
+arm> teach left off
 ```
 
-의 의미:
+pose 값이 `null`인 모터는 새 목표각을 주지 않고 현재 calibration된 위치를 유지합니다.
+
+---
+
+## Teach Mode
+
+Teach mode는 향후 사람이 직접 팔을 움직여 pose를 저장하기 위한 기능입니다.
+
+### Teach ON
 
 ```text
-ID 1 목표 출력각 = +10°
-ID 2 목표 출력각 = -10°
-ID 4 목표 출력각 = +20°
-속도 상한         = 20°/s
+STOP
+  ↓
+Torque OFF
+  ↓
+사람이 팔을 직접 원하는 자세로 이동
+  ↓
+encoder / joint 값은 계속 읽기 가능
+  ↓
+현재 자세를 pose로 저장
 ```
 
-CLI의 `speed`는 모든 축에 그대로 강제되는 속도가 아니라 **각 축의 속도 상한**입니다. `motor_control_node`는 가장 오래 걸리는 축의 예상 이동시간을 기준으로 나머지 축 속도를 낮춰, 세 축이 거의 동시에 도착하도록 실제 축별 속도를 계산합니다. 이 synchronized-arrival 로직도 3축 실물에서 정상 동작을 확인했습니다.
+### Teach OFF
 
-### 실물 latency 결과
+이전 command target로 바로 복귀시키지 않습니다.
 
 ```text
-기존: 매번 `ros2 action send_goal` 실행 → 명령 시작 전 체감 지연 존재
-현재: persistent `arm_cli`             → 입력 후 바로 모터가 움직임
+현재 0x92 위치 읽기
+        ↓
+Torque ON
+        ↓
+방금 읽은 현재 위치를 HOLD target으로 명령
 ```
 
-따라서 벤치에서 보였던 큰 지연의 주원인은 모터/LC529가 아니라 **매 명령마다 새로운 ROS2 client를 띄우던 오버헤드**였다고 볼 수 있습니다.
+즉 사람이 잡아둔 현재 자세를 기준으로 다시 토크를 걸도록 설계했습니다.
 
-현재 `arm_cli`는 일부러 **blocking 방식**으로 구현되어 있습니다. 한 이동이 끝난 뒤에야 다음 `arm>` 입력을 받습니다. 이 순차 제어는 실물에서 정상 확인했습니다.
+teach 전환 중 오류가 발생하면 best-effort 방식으로 전체 torque OFF를 시도합니다.
 
-아직 하지 않은 것:
+> **안전 주의:** torque OFF는 24 V 전원을 끄는 것이 아닙니다. 통신/encoder 읽기는 유지되지만 holding torque가 해제됩니다. 실물 로봇팔은 중력으로 떨어질 수 있으므로, 실제 teach mode 테스트 시 반드시 팔을 물리적으로 지지해야 합니다.
 
-- 이전 이동이 끝나기 전에 새로운 목표를 받아 덮어쓰기
-- 비동기/non-blocking 명령
-- 연속 streaming target 제어
+Teach mode 또는 torque OFF 상태에서는 `MoveJoint` 이동 명령을 거부합니다.
 
 ---
 
@@ -313,13 +391,13 @@ CLI의 `speed`는 모든 축에 그대로 강제되는 속도가 아니라 **각
 
 ### 1. Build
 
-현재 실물 검증에 사용한 workspace:
+현재 Raspberry Pi workspace:
 
 ```text
 ~/iroi_ws
 ```
 
-**반드시 workspace root에서 빌드합니다.**
+반드시 workspace root에서 빌드합니다.
 
 ```bash
 cd ~/iroi_ws
@@ -327,6 +405,8 @@ source /opt/ros/humble/setup.bash
 colcon build --symlink-install
 source install/setup.bash
 ```
+
+`~/iroi_ws/src`에서 build하면 안 됩니다.
 
 ### 2. 모터 ID 스캔
 
@@ -340,43 +420,48 @@ ros2 run motor_control_pkg scan_ids --port /dev/ttyUSB0
 ros2 run motor_control_pkg check_home --id 4 --port /dev/ttyUSB0
 ```
 
-`check_home`은 Homing 예상 delta/target만 계산하고 **모터 이동 명령은 보내지 않습니다.**
+`check_home`은 예상 Homing target만 계산하고 이동 명령은 보내지 않습니다.
 
-### 4. 현재 3축 실물 모터 실행
+### 4. 현재 검증된 3모터 실물 launch
 
 ```bash
 ros2 launch motor_control_pkg three_motor_real.launch.py
 ```
 
-실행 시 `zero_config_i10_verified.json`에 저장된 각 모터의 절대 영점 기준으로 ID 1, 2, 4를 자동 Homing합니다.
+ID 1, 2, 4를 대상으로 현재 실물 검증된 fallback 경로이며, 저장된 encoder zero로 실제 Homing합니다.
 
-### 5. Persistent CLI 실행
-
-다른 터미널에서:
+### 5. Persistent 직접 제어 CLI
 
 ```bash
-source ~/iroi_ws/install/setup.bash
 ros2 run motor_control_pkg arm_cli
 ```
 
-입력:
+입력 형식:
 
 ```text
-arm> 10 0 0 10
-arm> 10 -10 20 20
-arm> 0 0 0 10
+ID1_angle  ID2_angle  ID4_angle  speed
 ```
 
-### 6. 직접 Action 테스트
+예:
 
-단발 디버깅용:
+```text
+arm> 10 -10 20 20
+```
+
+### 6. 8축 mock pose-framework 실행
 
 ```bash
-ros2 action send_goal /test_arm/move_to iroi_interfaces/action/MoveJoint \
-  "{target_angles: [10.0, -10.0, 20.0], max_speeds: [20.0, 20.0, 20.0]}" --feedback
+ros2 launch motor_control_pkg dual_arm_pose_framework.launch.py
 ```
 
-반복 제어 테스트에서는 새 client를 매번 띄우지 않는 `arm_cli` 사용을 권장합니다.
+최종 모터 calibration이 완료되기 전까지 이 launch는 의도적으로 mock-only입니다.
+
+다른 터미널:
+
+```bash
+source ~/iroi_ws/install/setup.bash
+ros2 run motor_control_pkg arm_pose_cli --ros-args -p mode:=dual
+```
 
 ---
 
@@ -386,17 +471,24 @@ ros2 action send_goal /test_arm/move_to iroi_interfaces/action/MoveJoint \
 iroi_ws/src/
 ├── motor_control_pkg/
 │   ├── config/
+│   │   ├── poses.json
+│   │   └── zero_config_i10_verified.json
 │   ├── launch/
 │   │   ├── dual_arm.launch.py
+│   │   ├── dual_arm_pose_framework.launch.py
 │   │   ├── single_motor_id4_real.launch.py
+│   │   ├── three_motor_pose_framework.launch.py
 │   │   └── three_motor_real.launch.py
 │   ├── motor_control_pkg/
 │   │   ├── __init__.py
 │   │   ├── lk_motor.py
 │   │   ├── motor_control_node.py
+│   │   ├── pose_manager.py
+│   │   ├── arm_pose_cli.py
+│   │   ├── arm_startup_pose.py
+│   │   ├── arm_cli.py
 │   │   ├── scan_ids.py
-│   │   ├── check_home.py
-│   │   └── arm_cli.py
+│   │   └── check_home.py
 │   ├── package.xml
 │   ├── setup.cfg
 │   └── setup.py
@@ -405,93 +497,79 @@ iroi_ws/src/
         └── MoveJoint.action
 ```
 
-`setup.py` console scripts:
+설치되는 console script:
 
-```python
-'console_scripts': [
-    'motor_control_node = motor_control_pkg.motor_control_node:main',
-    'scan_ids = motor_control_pkg.scan_ids:main',
-    'check_home = motor_control_pkg.check_home:main',
-    'arm_cli = motor_control_pkg.arm_cli:main',
-]
+```text
+motor_control_node
+scan_ids
+check_home
+arm_cli
+arm_pose_cli
+arm_startup_pose
 ```
 
 ---
 
 ## Engineering Notes
 
-### 1. `0x94` / `0x92` frame 불일치 — 수정 및 실물 검증 완료
+### RS485 동시 접근
 
-초기 구현에서는 전원 재인가 후에도 유지되는 절대각 `0x94` frame과, 현재 세션의 누적 이동 `0x92` frame이 섞일 가능성이 있었습니다. 전원 사이클 이후 엉뚱한 위치로 이동할 위험이 있었습니다.
+LC529 RS485 bus는 half-duplex이므로 polling, Service, Action이 같은 bus를 동시에 사용하지 않도록 serial read/write 구간을 lock으로 보호합니다.
 
-현재는 `0x94`에서 최단 delta를 계산한 뒤 현재 `0x92` 값 위에 적용하고, 그 target을 이동 명령에 사용합니다. ID 4 실물 모터에서 정상 동작을 확인했습니다.
+### 통신 실패를 정상 `0.0°`로 처리하지 않음
 
-### 2. RS485 동시 접근
+읽기 실패는 error로 처리합니다. 실패값을 기준으로 이동을 시작하거나 물리 영점으로 저장하면 안 됩니다.
 
-Polling과 Action callback이 동일한 half-duplex serial bus에 동시에 접근하면 요청/응답이 섞일 수 있습니다. 통신 구간은 `threading.Lock`으로 보호합니다.
+### Calibration은 모터별로 관리
 
-### 3. 양팔 namespace 충돌
+최종 구성은 i10/i36 혼합이므로 `ratio`, `loop_period_deg`, speed limit, zero reference를 모터별 config에서 읽어야 합니다.
 
-왼팔/오른팔 노드는 독립 namespace를 사용해야 Topic/Service/Action 이름이 충돌하지 않습니다.
+### runtime pose와 repository template 분리
 
-### 4. 통신 실패값을 가짜 `0.0°`로 처리하면 안 됨
-
-읽기 실패는 정상값으로 취급하지 않고 error로 처리해야 합니다. 잘못된 0.0을 기준으로 영점을 저장하거나 이동을 시작하지 않도록 방어합니다.
-
-### 5. 중첩 ROS2 workspace 문제
-
-실수로 `~/iroi_ws/src`에서 `colcon build`를 실행하면서:
+repository의:
 
 ```text
-~/iroi_ws/src/build
-~/iroi_ws/src/install
-~/iroi_ws/src/log
+motor_control_pkg/config/poses.json
 ```
 
-가 생성된 적이 있습니다.
+은 초기 template입니다.
 
-이 stale install이 `AMENT_PREFIX_PATH`에서 정상 workspace보다 먼저 잡혀, 새로 추가한 `arm_cli`가 설치되어 있음에도 ROS2에서는 executable이 없는 것처럼 보였습니다.
+실제 pose 저장은:
 
-해결:
-
-```bash
-rm -rf ~/iroi_ws/src/build ~/iroi_ws/src/install ~/iroi_ws/src/log
+```text
+~/.ros/arm_poses.json
 ```
 
-잘못된 `src/install/setup.bash` source 항목을 제거한 뒤:
-
-```bash
-cd ~/iroi_ws
-colcon build --symlink-install
-source install/setup.bash
-```
-
-로 다시 빌드했습니다.
-
-**규칙: `colcon build`는 항상 `~/iroi_ws`에서만 실행합니다.**
+을 사용합니다. 따라서 현장에서 teach한 pose가 실수로 Git에 올라가는 것을 방지합니다.
 
 ---
 
 ## Roadmap
 
-- [x] ROS2 노드 구조 및 mock-mode 검증
+- [x] ROS2 노드 구조 및 mock 검증
 - [x] Dual-arm namespace 설계
-- [x] Raspberry Pi 4 + LC529 + 단일 실물 모터 통신
-- [x] 실물 절대엔코더 자동 Homing
+- [x] Raspberry Pi 4 + LC529 + 실물 모터 통신
+- [x] 절대엔코더 기반 실물 자동 Homing
 - [x] 실물 ROS2 Action 목표각 이동
-- [x] persistent `arm_cli`를 통한 명령 시작 지연 감소
-- [x] 이동 완료 → 다음 명령 순차 동작 확인
-- [ ] 이동 중 새 목표를 받는 preemption / non-blocking 제어
+- [x] persistent `arm_cli`
 - [x] 한 RS485 bus에서 다중 모터 검증
-- [ ] 새 모터별 ID ↔ joint 매핑
-- [ ] 각 새 모터의 절대 영점 재캘리브레이션 (`0x94`, encoder, raw); 기존 모터 영점값은 새 모터에 재사용하지 않음
-- [ ] MG5010E-i36 실물 ratio / wrap 검증
-- [ ] mixed i10/i36에서 공통 fallback이 아닌 각 motor config의 `ratio`, `loop_period_deg`가 ratio-dependent 계산에 사용되는지 검증
-- [ ] 개별 모터 → 한 팔 4축 → 양팔 8축 순차 검증
-- [ ] 좌/우 2개 RS485 bus 검증
-- [ ] 최종 left/right arm launch 및 dual-arm 8축 통합
-- [ ] 실제 RS485 timing 기반 polling rate 조정
-- [ ] 30분 이상 안정성 테스트
+- [x] 3축 synchronized arrival
+- [x] 8축 pose database framework
+- [x] mock pose 저장/list/show/playback
+- [x] mock Teach mode 이동 차단
+- [x] mock Teach OFF current-position hold
+- [ ] 최종 모터 ID ↔ 실제 joint 매핑
+- [ ] 최종 8모터별 절대 encoder zero calibration
+- [ ] MG5010E-i36 ratio / wrap 실물 검증
+- [ ] mixed i10/i36 실물 검증
+- [ ] `reference_only` startup 실물 검증
+- [ ] 8축 Pose 0 (`attention`) 실제 값 저장
+- [ ] 기구적으로 지지된 상태에서 Teach mode 실물 검증
+- [ ] 한 팔 4축 실물 검증
+- [ ] 좌/우 2개 RS485 bus 실물 검증
+- [ ] 전체 8모터 통합
+- [ ] 최종 startup에서 `allow_partial_pose=False` 적용
+- [ ] 장시간 안정성 테스트
 - [ ] MoveIt2 / RViz 연동
 
 ---

@@ -2,20 +2,22 @@
 
 # iROI — Dual-Arm Robot ROS2 Motor Control
 
-> ROS2 (Humble) motor-control stack for an 8-DOF dual-arm robot using LK-TECH RS485 servo motors. The project is being migrated from a standalone Python control script to a ROS2 architecture while preserving the already-validated low-level motor protocol layer.
+> ROS2 Humble control stack for an 8-DOF dual-arm robot using LK-TECH RS485 servo motors. The project keeps the already hardware-validated low-level motor protocol and adds ROS2-based multi-axis control, persistent pose storage, startup-pose handling, and teach-mode support above it.
 
-**Status: 🚧 In Progress** — Three-axis operation on one Raspberry Pi 4 + LC529 RS485 bus is hardware-verified for IDs 1, 2, and 4, including simultaneous discovery, absolute-encoder automatic homing, ROS2 target-angle motion, and synchronized arrival. Final mixed-i10/i36 8-axis dual-arm integration is still pending.
+**Status: 🚧 In Progress** — Three-axis real-hardware control on Raspberry Pi 4 + LC529 is verified for IDs 1, 2, and 4. The new 8-axis pose/teach framework has been validated in ROS2 mock mode. Final mixed-i10/i36 8-motor hardware integration, per-motor calibration, and real-hardware pose/teach validation are still pending.
 
 ---
 
-## Verified on Real Hardware
+## Current Validation Status
 
-As of **2026-08-14**, the following path has been verified on a Raspberry Pi:
+### Real hardware — verified
+
+As of **2026-08-14**, the following real-hardware path has been validated:
 
 ```text
 Raspberry Pi 4
    ↓ USB
-LC529 USB-RS485 (`/dev/ttyUSB0`, 115200 baud)
+LC529 USB-RS485 (/dev/ttyUSB0, 115200 baud)
    ↓ single RS485 bus
 ├── MG4010E-i10 (ID 1)
 ├── MG4010E-i10 (ID 2)
@@ -27,52 +29,55 @@ External 24 V motor supply
 Verified items:
 
 - [x] Ubuntu 22.04 + ROS2 Humble on Raspberry Pi 4
-- [x] LC529 detected as `/dev/ttyUSB0`
-- [x] Simultaneous ID 1, 2, and 4 discovery and model reads with `scan_ids`
-- [x] Real motor state / angle reads
-- [x] Absolute-encoder-based automatic homing of IDs 1, 2, and 4
-- [x] Three-axis ROS2 `MoveJoint` Action target-angle motion for IDs 1, 2, and 4
-- [x] Persistent `arm_cli` ActionClient with substantially reduced command-start latency
+- [x] LC529 communication on `/dev/ttyUSB0`
+- [x] Simultaneous discovery/model reads for IDs 1, 2, and 4
+- [x] Real motor state and angle reads
+- [x] Absolute-encoder-based automatic homing for IDs 1, 2, and 4
+- [x] ROS2 `MoveJoint` Action target-angle motion
+- [x] Persistent low-latency `arm_cli`
 - [x] Sequential move-complete → next-command operation
 - [x] Three-axis synchronized arrival based on the longest-moving axis
-- [ ] Command preemption while a previous move is still in progress
-- [ ] Dual RS485 bus validation
-- [ ] Full 8-motor integration
+- [ ] Final left/right dual-RS485 hardware validation
+- [ ] Final 8-motor hardware integration
 
-Current verified configuration:
+Current verified calibration file:
 
 ```text
-Port           : /dev/ttyUSB0
-Baudrate       : 115200
-ID 1           : MG4010E-i10
-ID 2           : MG4010E-i10
-ID 4           : MG5010E-i10
-Reduction ratio: 10:1 for all three test motors
-Logical period : 3600 motor-deg for all three test motors
+motor_control_pkg/config/zero_config_i10_verified.json
 ```
 
----
+The current bench motors all use a **10:1 reduction ratio** and **3600 motor-deg logical period**. Final MG5010 units are planned to use i36 gearing, so ratio-dependent calculations remain configurable per motor.
 
-## Why ROS2?
+### 8-axis pose/teach framework — mock verified
 
-The original implementation used a standalone Python script (`motor_control.py`) with file-based command polling (`target_batch.json`). As the number of motors and arms increased, timing, concurrency, restart behavior, and synchronized motion became increasingly difficult to manage manually.
-
-ROS2 provides standard primitives for those requirements:
-
-- **Topic** for continuous state publishing
-- **Service** for discrete operations such as torque / calibration
-- **Action** for goal-based motion with feedback and completion results
-- Namespaces and launch files for two independent arms
-- A clean path toward MoveIt2 / RViz integration
-
-The low-level RS485 driver (`lk_motor.py`) is retained as the hardware protocol layer; ROS2 is added above it as the orchestration layer rather than replacing the proven motor protocol implementation.
-
----
-
-## Target System Architecture
+The following software path has been validated on Raspberry Pi in ROS2 mock mode:
 
 ```text
-Laptop (development / remote control)
+Left arm  : IDs 1, 2, 3, 4
+Right arm : IDs 5, 6, 7, 8
+```
+
+Verified in mock mode:
+
+- [x] Dual-arm namespaced 8-axis startup
+- [x] Pose database with fixed IDs 1..8
+- [x] `null` handling for unknown/unmeasured motor values
+- [x] Reserved Pose 0 (`attention` / startup pose)
+- [x] Pose save / list / show / playback
+- [x] 8-axis status view
+- [x] Teach ON → torque OFF
+- [x] Motion blocked while teach mode / torque OFF is active
+- [x] Teach OFF → torque ON + current-position hold
+- [x] Startup Pose 0 with all `null` values → no physical target, current position held
+
+**Important:** the pose/teach framework has not yet been validated on the final physical 8-motor arm.
+
+---
+
+## Target Hardware Architecture
+
+```text
+Laptop / development PC
    │
    │ SSH / ROS2 tooling
    ▼
@@ -85,52 +90,51 @@ Raspberry Pi 4
    └── Right-arm motors in parallel
 ```
 
-The Raspberry Pi and LC529 provide **communication only**. Motor drive power is supplied separately from the Pi power path.
-
 Target motor configuration:
 
 - MG5010E-i36 ×4
 - MG4010E-i10 ×4
 - Total: 8 motors
-- One LC529 per arm, for two independent RS485 buses total
+- One LC529 per arm
+- Two independent RS485 buses total
 
-> The current bench setup is **two MG4010E-i10 motors plus one MG5010E-i10**. The final MG5010 units are planned to use i36 gearing, so the reduction ratio must remain configurable per motor.
+The Raspberry Pi and LC529 are communication/control devices only. Motor drive power is supplied separately from the Pi power path.
 
 ---
 
-## ROS2 Node Architecture
+## Control Architecture
 
-The same `motor_control_node` is intended to run once per arm with different parameters and namespaces.
-
-```text
-[left_arm]  motor_control_node
-[right_arm] motor_control_node
-        │
-        ├── Topic   /{arm}/joint_states
-        ├── Service /{arm}/torque
-        ├── Service /{arm}/set_zero
-        └── Action  /{arm}/move_to
-        │
-        ▼
-   MoveIt2 / RViz  (planned)
-```
-
-The current three-axis bench launch uses:
+The same `motor_control_node` is intended to run once per arm with different namespaces and motor lists.
 
 ```text
-/test_arm/move_to
+[left_arm]  motor_control_node ── IDs 1,2,3,4
+[right_arm] motor_control_node ── IDs 5,6,7,8
+
+        │
+        ├── Topic    /{arm}/joint_states
+        ├── Service  /{arm}/torque
+        ├── Service  /{arm}/teach
+        ├── Service  /{arm}/sync_reference
+        ├── Service  /{arm}/set_zero
+        ├── Service  /{arm}/home
+        └── Action   /{arm}/move_to
 ```
+
+The existing low-level RS485 driver (`lk_motor.py`) remains the hardware protocol layer. ROS2 is used above it for state publication, services, multi-axis motion, pose execution, and future MoveIt2/RViz integration.
 
 ---
 
 ## ROS2 Interfaces
 
-| Type | Name | Message Type | Description |
+| Type | Name | Message Type | Purpose |
 |---|---|---|---|
-| Topic | `/{arm}/joint_states` | `sensor_msgs/JointState` | Publishes joint angles |
-| Service | `/{arm}/torque` | `std_srvs/SetBool` | Motor torque on/off |
-| Service | `/{arm}/set_zero` | `std_srvs/Trigger` | Calibrates/persists the physical zero reference; not intended to redefine zero on every boot |
-| Action | `/{arm}/move_to` | `iroi_interfaces/action/MoveJoint` | Goal-based joint motion with feedback/result |
+| Topic | `/{arm}/joint_states` | `sensor_msgs/JointState` | Publish calibrated output-axis joint angles |
+| Service | `/{arm}/torque` | `std_srvs/SetBool` | Raw arm-level torque ON/OFF |
+| Service | `/{arm}/teach` | `std_srvs/SetBool` | Hand-guiding mode with safe torque transition |
+| Service | `/{arm}/sync_reference` | `std_srvs/Trigger` | Restore calibrated 0x92 reference without physical movement |
+| Service | `/{arm}/set_zero` | `std_srvs/Trigger` | Recalibrate and persist the physical encoder zero |
+| Service | `/{arm}/home` | `std_srvs/Trigger` | Physically return to the saved encoder zero |
+| Action | `/{arm}/move_to` | `iroi_interfaces/action/MoveJoint` | Goal-based multi-joint motion with feedback/result |
 
 `MoveJoint.action`:
 
@@ -150,116 +154,293 @@ float64[] errors
 bool settled
 ```
 
-Important: the request field is **`max_speeds`** (plural).
+`max_speeds` is expressed in output-axis deg/s.
 
 ---
 
-## Absolute-Encoder Homing
+## Encoder Calibration vs Robot Poses
 
-The robot arm does **not** treat the current boot position as zero.
+The system intentionally separates **motor calibration** from **robot poses**.
 
-Instead, a physical zero is calibrated and stored once. On startup, the motor uses its absolute encoder to return to that same physical zero.
+### 1. Motor / encoder calibration
+
+Stored in files such as:
+
+```text
+zero_config_i10_verified.json
+```
+
+Each motor stores its own calibration information, including:
+
+```text
+motor_id
+ratio
+zero_single_deg
+zero_encoder
+zero_raw
+loop_period_deg
+```
+
+This defines the physical coordinate reference for that motor. A replacement motor must be calibrated independently; calibration values must not be copied blindly between motors.
+
+### 2. Robot poses
+
+Runtime poses are stored separately in:
+
+```text
+~/.ros/arm_poses.json
+```
+
+Pose values are **calibrated output/joint angles**, not raw encoder values.
+
+All pose records always contain IDs 1..8. Unknown values are stored as JSON `null`.
+
+Example:
+
+```json
+{
+  "version": 1,
+  "poses": {
+    "0": {
+      "name": "attention",
+      "angles": {
+        "1": null,
+        "2": null,
+        "3": null,
+        "4": null,
+        "5": null,
+        "6": null,
+        "7": null,
+        "8": null
+      }
+    }
+  }
+}
+```
+
+Pose 0 is reserved as the **startup / attention pose** and cannot be deleted.
+
+`version: 1` is the pose-file format version, not a motor version.
+
+---
+
+## Absolute Encoder Reference and Startup Modes
 
 ### Relevant motor angle frames
 
-- `0x94` — persistent absolute angle used to locate the stored physical zero
-- `0x92` — accumulated/session angle used for continuous tracking and motion commands
-- `0xA4` — move command; target must be expressed in the `0x92` frame
+- `0x94` — persistent absolute encoder angle
+- `0x92` — accumulated/session angle used for tracking and motion
+- `0xA4` — motion command using the `0x92` frame
 
-For the current ID 1, 2, and 4 i10 bench motors:
+The calibrated output angle is conceptually:
 
 ```text
-reduction ratio = 10.0
-logical period  = 3600.0 motor-deg
+output_angle = (current_0x92 - zero_92) / reduction_ratio
 ```
 
-### Startup homing logic
+### `home` mode
+
+Legacy hardware-verified behavior:
 
 ```text
-saved zero_single_deg (0x94 frame)
+read saved zero in 0x94
         ↓
-read current 0x94
-read current 0x92
+read current 0x94 + current 0x92
         ↓
-shortest_delta(saved_zero, current_0x94, period)
+shortest_delta(...)
         ↓
-zero_92 = current_0x92 + delta
+map saved zero into current 0x92 frame
         ↓
-move_to_frame_angle(zero_92)
-        ↓
-use zero_92 as the output-zero reference for this power session
+physically move to that zero
 ```
 
-Shortest signed delta:
+This is still used by the verified fallback launch:
 
-```python
-def shortest_delta(target, current, period):
-    half = period / 2.0
-    return (target - current + half) % period - half
+```bash
+ros2 launch motor_control_pkg three_motor_real.launch.py
 ```
 
-Output angle after homing is conceptually:
+### `reference_only` mode
+
+The new pose framework separates coordinate restoration from physical homing:
 
 ```text
-(current_0x92 - zero_92) / reduction_ratio
+read saved zero in 0x94
+        ↓
+read current 0x94 + current 0x92
+        ↓
+compute zero_92
+        ↓
+restore calibrated joint coordinates
+        ↓
+NO physical move to encoder zero
+        ↓
+startup pose node attempts Pose 0
 ```
 
-A requested output target is mapped as:
+This allows the final robot to start from its calibrated coordinate system and move directly to the defined **Pose 0** instead of first visiting encoder-zero position.
 
-```text
-target_0x92 = zero_92 + target_output_angle * reduction_ratio
+Development launch:
+
+```bash
+ros2 launch motor_control_pkg three_motor_pose_framework.launch.py
 ```
 
-### Real-hardware homing result
-
-ROS2 successfully reused the per-motor absolute zero values from `zero_config_i10_verified.json`, originally produced during the standalone Python hardware tests, to automatically home IDs 1, 2, and 4. The values below preserve the earlier detailed result for ID 4.
-
-Saved zero for the current ID 4 test motor:
-
-```text
-saved zero 0x94 = 3599.98 deg
-```
-
-The motor was deliberately displaced by hand before the test:
-
-```text
-current 0x94    : 728.36 deg
-current 0x92    : 728.36 deg
-saved zero 0x94 : 3599.98 deg
-homing delta    : -728.38 motor-deg
-                : -72.838 output-deg
-target zero_92  : -0.02 deg
-```
-
-The real motor then returned to the stored physical zero successfully. This verifies the `0x94 → shortest_delta → 0x92` frame conversion on hardware.
+This launch is prepared for IDs 1, 2, and 4 but has **not yet been real-hardware validated**. The current Pose 0 values are still `null`, so no startup pose movement should occur until actual pose values are recorded.
 
 ---
 
-## Low-Latency Command Path: `arm_cli`
+## Pose Framework
 
-A noticeable delay was observed when repeatedly using:
+### Pose manager
+
+`pose_manager.py` provides persistent 8-axis pose storage.
+
+Rules:
+
+- IDs 1..8 are always present
+- unknown/unmeasured values are `null`
+- Pose 0 always exists
+- Pose 0 cannot be deleted
+- pose-file version is validated
+- saves are written atomically
+
+### Pose CLI
+
+Run the 8-axis CLI:
 
 ```bash
-ros2 action send_goal ...
+ros2 run motor_control_pkg arm_pose_cli --ros-args -p mode:=dual
 ```
 
-Each invocation starts a new ROS2 CLI process and Action client, which introduces startup/discovery overhead.
+Available commands:
 
-To remove that overhead during testing, a persistent client was added:
+```text
+pose <ID> [speed]       move to a stored pose
+save <ID> [name]        save current 8-axis joint values
+list                    list poses
+show <ID>               show one pose
+delete <ID>             delete pose (Pose 0 is protected)
+teach <target> on       enter teach mode: torque OFF
+teach <target> off      exit teach mode: torque ON + current-position hold
+torque <target> on/off  raw torque control
+status                  show current 8-axis state
+help
+q | quit | exit
+```
+
+Targets:
+
+```text
+test / left / right / all
+```
+
+Example:
+
+```text
+arm> save 1 wave
+arm> show 1
+arm> pose 1 20
+arm> teach left on
+arm> teach left off
+```
+
+When a stored pose value is `null`, that motor is not given a new pose target; its current calibrated position is held instead.
+
+---
+
+## Teach Mode
+
+Teach mode is intended for future hand-guided pose recording.
+
+### Teach ON
+
+```text
+STOP
+  ↓
+Torque OFF
+  ↓
+User manually positions the arm
+  ↓
+Current encoder/joint values remain readable
+  ↓
+Pose can be saved
+```
+
+### Teach OFF
+
+The controller does not blindly restore the previous command target.
+
+Instead:
+
+```text
+read current 0x92 position
+        ↓
+Torque ON
+        ↓
+command the current position as HOLD target
+```
+
+This is designed to reduce the risk of the arm snapping back toward an old target after hand-guiding.
+
+If teach-mode transition fails, the controller attempts a best-effort fallback to torque OFF.
+
+> **Safety:** torque OFF does not mean motor power is disconnected. Communication and encoder reads remain available, but holding torque is released. A physical robot arm may drop under gravity, so the arm must be mechanically supported during real teach-mode testing.
+
+While teach mode or torque OFF is active, `MoveJoint` motion requests are rejected.
+
+---
+
+## Getting Started
+
+### 1. Build
+
+The active Raspberry Pi workspace is:
+
+```text
+~/iroi_ws
+```
+
+Always build from the workspace root:
+
+```bash
+cd ~/iroi_ws
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install
+source install/setup.bash
+```
+
+Do **not** build from `~/iroi_ws/src`.
+
+### 2. Scan motors
+
+```bash
+ros2 run motor_control_pkg scan_ids --port /dev/ttyUSB0
+```
+
+### 3. Read-only homing calculation
+
+```bash
+ros2 run motor_control_pkg check_home --id 4 --port /dev/ttyUSB0
+```
+
+`check_home` calculates the expected homing target without sending a move command.
+
+### 4. Verified three-motor real-hardware launch
+
+```bash
+ros2 launch motor_control_pkg three_motor_real.launch.py
+```
+
+This is the current hardware-verified fallback path for IDs 1, 2, and 4 and physically homes them to the saved encoder-zero references.
+
+### 5. Persistent direct bench CLI
 
 ```bash
 ros2 run motor_control_pkg arm_cli
 ```
 
-It connects once and accepts targets for IDs 1, 2, and 4 plus a speed limit:
-
-```text
-arm> 10 0 0 10
-arm> 10 -10 20 20
-arm> 0 0 0 10
-```
-
-Format:
+Input format:
 
 ```text
 ID1_angle  ID2_angle  ID4_angle  speed
@@ -271,99 +452,20 @@ Example:
 arm> 10 -10 20 20
 ```
 
-means:
-
-```text
-ID 1 target = +10°
-ID 2 target = -10°
-ID 4 target = +20°
-speed limit = 20°/s
-```
-
-The CLI `speed` is an upper bound for each axis, not a speed forced equally on every motor. `motor_control_node` uses the longest predicted axis duration and reduces the other axes' speeds so all three arrive nearly together. This existing synchronized-arrival logic has now been verified on the three-axis hardware setup.
-
-### Real-hardware latency result
-
-```text
-Repeated `ros2 action send_goal` : noticeable command-start delay
-Persistent `arm_cli`             : motion begins immediately from the user's perspective
-```
-
-This indicates that the dominant observed delay came from repeatedly starting a fresh ROS2 client, not from the LC529 or motor itself.
-
-The current CLI is intentionally **blocking**: it waits until the move completes before accepting the next `arm>` command. Sequential operation has been verified. Motion preemption / streaming target updates are a future step.
-
----
-
-## Getting Started
-
-### 1. Build
-
-The active workspace used during real-hardware validation is:
-
-```text
-~/iroi_ws
-```
-
-Build **only from the workspace root**:
+### 6. 8-axis mock pose-framework launch
 
 ```bash
-cd ~/iroi_ws
-source /opt/ros/humble/setup.bash
-colcon build --symlink-install
-source install/setup.bash
+ros2 launch motor_control_pkg dual_arm_pose_framework.launch.py
 ```
 
-
-### 2. Scan motors
-
-```bash
-ros2 run motor_control_pkg scan_ids --port /dev/ttyUSB0
-```
-
-### 3. Read-only homing check
-
-```bash
-ros2 run motor_control_pkg check_home --id 4 --port /dev/ttyUSB0
-```
-
-`check_home` calculates the expected homing target without sending a move command.
-
-### 4. Run the current real three-motor test
-
-```bash
-ros2 launch motor_control_pkg three_motor_real.launch.py
-```
-
-This starts the real motor node and automatically homes IDs 1, 2, and 4 from their absolute zeros in `zero_config_i10_verified.json`.
-
-### 5. Start the persistent test CLI
+This launch is intentionally mock-only until all final motors have verified calibration values.
 
 In another terminal:
 
 ```bash
 source ~/iroi_ws/install/setup.bash
-ros2 run motor_control_pkg arm_cli
+ros2 run motor_control_pkg arm_pose_cli --ros-args -p mode:=dual
 ```
-
-Then:
-
-```text
-arm> 10 0 0 10
-arm> 10 -10 20 20
-arm> 0 0 0 10
-```
-
-### 6. Direct Action test
-
-For one-off debugging:
-
-```bash
-ros2 action send_goal /test_arm/move_to iroi_interfaces/action/MoveJoint \
-  "{target_angles: [10.0, -10.0, 20.0], max_speeds: [20.0, 20.0, 20.0]}" --feedback
-```
-
-For repeated testing, `arm_cli` is preferred because it avoids repeatedly creating a new ROS2 Action client.
 
 ---
 
@@ -373,17 +475,24 @@ For repeated testing, `arm_cli` is preferred because it avoids repeatedly creati
 iroi_ws/src/
 ├── motor_control_pkg/
 │   ├── config/
+│   │   ├── poses.json
+│   │   └── zero_config_i10_verified.json
 │   ├── launch/
 │   │   ├── dual_arm.launch.py
+│   │   ├── dual_arm_pose_framework.launch.py
 │   │   ├── single_motor_id4_real.launch.py
+│   │   ├── three_motor_pose_framework.launch.py
 │   │   └── three_motor_real.launch.py
 │   ├── motor_control_pkg/
 │   │   ├── __init__.py
 │   │   ├── lk_motor.py
 │   │   ├── motor_control_node.py
+│   │   ├── pose_manager.py
+│   │   ├── arm_pose_cli.py
+│   │   ├── arm_startup_pose.py
+│   │   ├── arm_cli.py
 │   │   ├── scan_ids.py
-│   │   ├── check_home.py
-│   │   └── arm_cli.py
+│   │   └── check_home.py
 │   ├── package.xml
 │   ├── setup.cfg
 │   └── setup.py
@@ -392,89 +501,71 @@ iroi_ws/src/
         └── MoveJoint.action
 ```
 
-`setup.py` console scripts include:
+Installed console scripts include:
 
-```python
-'console_scripts': [
-    'motor_control_node = motor_control_pkg.motor_control_node:main',
-    'scan_ids = motor_control_pkg.scan_ids:main',
-    'check_home = motor_control_pkg.check_home:main',
-    'arm_cli = motor_control_pkg.arm_cli:main',
-]
+```text
+motor_control_node
+scan_ids
+check_home
+arm_cli
+arm_pose_cli
+arm_startup_pose
 ```
 
 ---
 
 ## Engineering Notes
 
-### 1. 0x94 / 0x92 frame mismatch — fixed and hardware-verified
+### RS485 concurrent access
 
-An earlier implementation mixed the persistent absolute angle frame (`0x94`) with the session/accumulated motion frame (`0x92`). That could command an unintended position after a power cycle.
+Each LC529 bus is half-duplex. Serial read/write sections are protected with a lock so polling, services, and Action execution do not interleave packets on the same bus.
 
-The fix computes the shortest delta in the `0x94` frame and applies it to the current `0x92` value before issuing a move. This has now been verified on the real ID 4 motor.
+### Failed reads are not valid `0.0°` measurements
 
-### 2. RS485 concurrent access
+Communication failures are treated as errors. Motion should not start from a failed baseline, and calibration should not persist a failed read as a physical zero.
 
-Polling and Action callbacks can reach the same half-duplex serial bus from different execution contexts. Communication points are protected with a `threading.Lock` to prevent interleaved request/response traffic.
+### Calibration must remain per motor
 
-### 3. Namespace collision between arms
+The final system mixes i10 and i36 reductions. `ratio`, `loop_period_deg`, speed limits, and zero references must come from each motor's configuration rather than a shared global assumption.
 
-Left and right control nodes must use independent namespaces so that their topics, services, and actions do not collide.
+### Runtime pose file vs repository template
 
-### 4. Communication-read failures must not become fake `0.0` angles
-
-Failed reads should be treated as errors. Motion should not begin from an invalid baseline, and zero calibration should not persist a failed read as a physical reference.
-
-### 5. Nested ROS2 workspace / stale package issue
-
-A `colcon build` was accidentally executed from `~/iroi_ws/src`, creating:
+`motor_control_pkg/config/poses.json` is the repository template. The runtime pose CLI/startup node uses:
 
 ```text
-~/iroi_ws/src/build
-~/iroi_ws/src/install
-~/iroi_ws/src/log
+~/.ros/arm_poses.json
 ```
 
-That stale installation appeared before the correct workspace in `AMENT_PREFIX_PATH`, so ROS2 reported an older `motor_control_pkg` and could not see the newly added `arm_cli` executable.
-
-Resolved by:
-
-```bash
-rm -rf ~/iroi_ws/src/build ~/iroi_ws/src/install ~/iroi_ws/src/log
-```
-
-removing the stale `src/install/setup.bash` source entry, then rebuilding from:
-
-```bash
-cd ~/iroi_ws
-colcon build --symlink-install
-source install/setup.bash
-```
-
-Rule: **always build from `~/iroi_ws`, never from `~/iroi_ws/src`.**
+This prevents locally taught poses from being unintentionally committed to Git.
 
 ---
 
 ## Roadmap
 
-- [x] ROS2 node architecture and mock-mode validation
+- [x] ROS2 node architecture and mock validation
 - [x] Dual-arm namespace design
-- [x] Raspberry Pi 4 + LC529 + single real-motor communication
+- [x] Raspberry Pi 4 + LC529 + real motor communication
 - [x] Real-hardware absolute-encoder automatic homing
-- [x] Real-hardware ROS2 Action target-angle control
-- [x] Persistent `arm_cli` with reduced command-start latency
-- [x] Sequential move-complete → next-command validation
-- [ ] Motion preemption / non-blocking target updates
+- [x] Real-hardware ROS2 Action target-angle motion
+- [x] Persistent `arm_cli`
 - [x] Multi-motor validation on one RS485 bus
-- [ ] Map each new motor ID to its joint
-- [ ] Recalibrate every new motor's absolute zero (`0x94`, encoder, raw); never reuse an existing motor's zero values for a new motor
-- [ ] Validate the MG5010E-i36 ratio and wrap behavior on hardware
-- [ ] In mixed i10/i36 operation, verify that ratio-dependent calculations use each motor config's `ratio` and `loop_period_deg`, not a shared fallback
-- [ ] Validate in stages: individual motors → one 4-axis arm → both 8-axis arms
-- [ ] Left/right dual-bus validation
-- [ ] Final left/right arm launches and dual-arm 8-axis integration
-- [ ] Tune polling rate from real RS485 timing measurements
-- [ ] 30+ minute stability test
+- [x] Three-axis synchronized arrival
+- [x] 8-axis pose database framework
+- [x] Pose save/list/show/playback in mock mode
+- [x] Teach-mode motion interlock in mock mode
+- [x] Teach OFF current-position hold logic in mock mode
+- [ ] Map all final motor IDs to physical joints
+- [ ] Calibrate every final motor's absolute encoder zero
+- [ ] Validate MG5010E-i36 ratio / wrap behavior
+- [ ] Validate mixed i10/i36 operation
+- [ ] Validate `reference_only` startup on real hardware
+- [ ] Record full 8-axis Pose 0 (`attention`)
+- [ ] Validate teach mode on a mechanically supported physical arm
+- [ ] Validate one complete 4-axis arm
+- [ ] Validate left/right dual RS485 buses
+- [ ] Integrate and validate all 8 motors
+- [ ] Switch final startup to reject incomplete Pose 0 (`allow_partial_pose=False`)
+- [ ] Long-duration stability test
 - [ ] MoveIt2 / RViz integration
 
 ---
