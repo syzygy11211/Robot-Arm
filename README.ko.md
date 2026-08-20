@@ -315,6 +315,7 @@ ros2 run motor_control_pkg arm_pose_cli --ros-args -p mode:=dual
 
 ```text
 pose <ID> [speed]       저장된 pose로 이동
+sequence <ID...>        입력한 순서대로 저장 pose를 연속 실행
 save <ID> [name]        현재 8축 관절값 저장
 list                    pose 목록
 show <ID>               pose 상세
@@ -339,9 +340,19 @@ test / left / right / all
 arm> save 1 wave
 arm> show 1
 arm> pose 1 20
+arm> sequence 0 1 2 3 2 1 0
 arm> teach left on
 arm> teach left off
 ```
+
+`sequence`는 이동을 시작하기 전에 모든 pose ID가 존재하는지 확인합니다.
+그다음 각 `MoveJoint` Action이 성공적으로 완료될 때까지 기다린 후 다음
+pose를 전송합니다. 오류 또는 timeout이 발생하면 남은 sequence를 중단합니다.
+현재는 `default_pose_speed_dps`를 사용하며 sequence별 속도 지정은 아직
+지원하지 않습니다.
+
+순차 실행 명령의 코드 구현과 패키지 빌드는 완료했습니다. Mock 및 실물
+하드웨어 동작 검증은 아직 진행하지 않았습니다.
 
 pose 값이 `null`인 모터는 새 목표각을 주지 않고 현재 calibration된 위치를 유지합니다.
 
@@ -408,13 +419,70 @@ source install/setup.bash
 
 `~/iroi_ws/src`에서 build하면 안 됩니다.
 
-### 2. 모터 ID 스캔
+저장소를 다른 이름의 workspace에 내려받았다면 해당 workspace root를
+사용합니다. 현재 Ubuntu 개발 환경은 `~/ros2_ws`를 사용하므로 빌드할 때
+`cd ~/ros2_ws`에서 시작합니다.
+
+### 2. 개발할 때 열어야 하는 폴더와 파일
+
+에디터에서는 workspace root를 엽니다. Raspberry Pi에서는 `~/iroi_ws`, 현재
+Ubuntu 개발 PC에서는 `~/ros2_ws`입니다. 주요 파일의 역할은 다음과 같습니다.
+
+| 용도 | 파일 |
+| --- | --- |
+| Pose/teach/sequence CLI 명령 | `src/motor_control_pkg/motor_control_pkg/arm_pose_cli.py` |
+| 한 번의 `MoveJoint` 이동과 모터 안전 차단 | `src/motor_control_pkg/motor_control_pkg/motor_control_node.py` |
+| Pose JSON 읽기와 저장 | `src/motor_control_pkg/motor_control_pkg/pose_manager.py` |
+| 양팔 mock 실행 | `src/motor_control_pkg/launch/dual_arm_pose_framework.launch.py` |
+| 검증된 3모터 실물 fallback | `src/motor_control_pkg/launch/three_motor_real.launch.py` |
+| 3모터 pose-framework 개발 launch | `src/motor_control_pkg/launch/three_motor_pose_framework.launch.py` |
+
+실행 중 저장한 pose는 `~/.ros/arm_poses.json`에 기록됩니다. 이 파일은 저장소의
+template이 아니라 runtime 데이터이므로 보통 직접 편집하지 않고
+`arm_pose_cli`를 통해 변경합니다.
+
+### 3. 모터 없이 mock pose/sequence 실행
+
+빌드가 성공했다면 터미널 2개를 엽니다. 새 터미널을 열 때마다 ROS2와
+workspace를 source해야 package 명령을 사용할 수 있습니다.
+
+터미널 1 — 양팔 mock motor-control node와 startup-pose node 실행:
+
+```bash
+cd ~/ros2_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch motor_control_pkg dual_arm_pose_framework.launch.py
+```
+
+터미널 2 — 대화형 pose CLI 실행:
+
+```bash
+cd ~/ros2_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 run motor_control_pkg arm_pose_cli --ros-args -p mode:=dual
+```
+
+`arm_pose_cli` 안에서 다음 순서로 최소 명령 흐름을 확인할 수 있습니다.
+
+```text
+arm> save 1 mock_step_1
+arm> save 2 mock_step_2
+arm> list
+arm> sequence 0 1 2 1 0
+```
+
+Mock mode에서는 pose 검색, Action 완료, 실행 순서와 오류 처리를 확인할 수
+있습니다. 실제 간섭, 중력, calibration 및 모터 안전성은 검증하지 못합니다.
+
+### 4. 모터 ID 스캔
 
 ```bash
 ros2 run motor_control_pkg scan_ids --port /dev/ttyUSB0
 ```
 
-### 3. 이동 없이 Homing 계산만 확인
+### 5. 이동 없이 Homing 계산만 확인
 
 ```bash
 ros2 run motor_control_pkg check_home --id 4 --port /dev/ttyUSB0
@@ -422,7 +490,7 @@ ros2 run motor_control_pkg check_home --id 4 --port /dev/ttyUSB0
 
 `check_home`은 예상 Homing target만 계산하고 이동 명령은 보내지 않습니다.
 
-### 4. 현재 검증된 3모터 실물 launch
+### 6. 현재 검증된 3모터 실물 launch
 
 ```bash
 ros2 launch motor_control_pkg three_motor_real.launch.py
@@ -430,7 +498,7 @@ ros2 launch motor_control_pkg three_motor_real.launch.py
 
 ID 1, 2, 4를 대상으로 현재 실물 검증된 fallback 경로이며, 저장된 encoder zero로 실제 Homing합니다.
 
-### 5. Persistent 직접 제어 CLI
+### 7. Persistent 직접 제어 CLI
 
 ```bash
 ros2 run motor_control_pkg arm_cli
@@ -446,21 +514,6 @@ ID1_angle  ID2_angle  ID4_angle  speed
 
 ```text
 arm> 10 -10 20 20
-```
-
-### 6. 8축 mock pose-framework 실행
-
-```bash
-ros2 launch motor_control_pkg dual_arm_pose_framework.launch.py
-```
-
-최종 모터 calibration이 완료되기 전까지 이 launch는 의도적으로 mock-only입니다.
-
-다른 터미널:
-
-```bash
-source ~/iroi_ws/install/setup.bash
-ros2 run motor_control_pkg arm_pose_cli --ros-args -p mode:=dual
 ```
 
 ---
@@ -558,6 +611,9 @@ motor_control_pkg/config/poses.json
 - [x] mock pose 저장/list/show/playback
 - [x] mock Teach mode 이동 차단
 - [x] mock Teach OFF current-position hold
+- [x] 순차 pose 명령 구현 및 패키지 빌드
+- [ ] 순차 pose 실행 mock 검증
+- [ ] 순차 pose 실행 실물 하드웨어 검증
 - [ ] 최종 모터 ID ↔ 실제 joint 매핑
 - [ ] 최종 8모터별 절대 encoder zero calibration
 - [ ] MG5010E-i36 ratio / wrap 실물 검증

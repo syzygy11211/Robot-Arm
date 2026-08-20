@@ -261,6 +261,36 @@ class ArmPoseCLI(Node):
             self._wait_goal_result(spec, handle)
         print(f"[arm] pose {pose_id} 이동 완료")
 
+    def move_sequence(self, pose_ids: Iterable[int], speed: float) -> None:
+        pose_ids = [int(pose_id) for pose_id in pose_ids]
+
+        if not pose_ids:
+            raise ValueError("sequence에는 최소 1개의 pose ID가 필요합니다.")
+
+        speed = self._validate_speed(speed)
+
+        # Validate every pose before motion so a missing ID cannot leave the
+        # sequence partially executed.
+        for pose_id in pose_ids:
+            self.pose_manager.get_pose(pose_id)
+
+        print(
+            f"[arm] sequence 시작: {pose_ids}, "
+            f"speed={speed:.1f} deg/s"
+        )
+
+        total = len(pose_ids)
+
+        for index, pose_id in enumerate(pose_ids, start=1):
+            print(
+                f"[arm] sequence {index}/{total}:"
+                f" pose {pose_id} 실행"
+            )
+
+            self.move_pose(pose_id, speed)
+
+        print("[arm] sequence 완료")
+
     def save_pose(self, pose_id: int, name: Optional[str]) -> None:
         snapshot = self._snapshot_angles()
         saved = self.pose_manager.save_pose(pose_id, snapshot, name=name)
@@ -344,6 +374,7 @@ class ArmPoseCLI(Node):
     def print_help() -> None:
         print("Commands:")
         print("  pose <ID> [speed]       저장 pose로 이동")
+        print("  sequence <ID...>        여러 pose를 입력 순서대로 실행")
         print("  save <ID> [name]        현재 8축 값을 저장; 미수신 ID는 NULL")
         print("  list                    pose 목록")
         print("  show <ID>               pose 상세")
@@ -357,6 +388,7 @@ class ArmPoseCLI(Node):
         print()
         print("target: test/left/right/all (mode에 따라 사용 가능)")
         print("예: pose 0 20")
+        print("    sequence 0 1 2 3 2 1 0")
         print("    save 1 wave")
         print("    teach left on")
         print("    teach left off")
@@ -409,6 +441,10 @@ class ArmPoseCLI(Node):
                         else self.default_pose_speed_dps
                     )
                     self.move_pose(pose_id, speed)
+
+                elif cmd == "sequence" and len(parts) >= 2:
+                    pose_ids = [int(value) for value in parts[1:]]
+                    self.move_sequence(pose_ids, self.default_pose_speed_dps)
 
                 elif cmd == "teach" and len(parts) == 3:
                     value = parts[2].lower()

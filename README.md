@@ -317,6 +317,7 @@ Available commands:
 
 ```text
 pose <ID> [speed]       move to a stored pose
+sequence <ID...>        move through stored poses in the given order
 save <ID> [name]        save current 8-axis joint values
 list                    list poses
 show <ID>               show one pose
@@ -341,9 +342,18 @@ Example:
 arm> save 1 wave
 arm> show 1
 arm> pose 1 20
+arm> sequence 0 1 2 3 2 1 0
 arm> teach left on
 arm> teach left off
 ```
+
+`sequence` validates every pose ID before motion starts, then waits for each
+`MoveJoint` Action to complete successfully before sending the next pose. The
+sequence stops on the first error or timeout. It currently uses
+`default_pose_speed_dps`; per-sequence speed selection is not yet supported.
+
+The sequential command has been implemented and passes the package build. Mock
+and real-hardware motion validation are still pending.
 
 When a stored pose value is `null`, that motor is not given a new pose target; its current calibrated position is held instead.
 
@@ -412,13 +422,70 @@ source install/setup.bash
 
 Do **not** build from `~/iroi_ws/src`.
 
-### 2. Scan motors
+If this repository is checked out in a differently named workspace, use that
+workspace root instead. For example, the current Ubuntu development checkout
+uses `~/ros2_ws`, so its build command starts with `cd ~/ros2_ws`.
+
+### 2. Files to open when developing
+
+Open the workspace root (`~/iroi_ws` on the Raspberry Pi or `~/ros2_ws` on the
+current Ubuntu development machine) in your editor. The main files are:
+
+| Purpose | File |
+| --- | --- |
+| Pose/teach/sequence CLI commands | `src/motor_control_pkg/motor_control_pkg/arm_pose_cli.py` |
+| One `MoveJoint` motion and motor safety gates | `src/motor_control_pkg/motor_control_pkg/motor_control_node.py` |
+| Pose JSON loading and saving | `src/motor_control_pkg/motor_control_pkg/pose_manager.py` |
+| Dual-arm mock startup | `src/motor_control_pkg/launch/dual_arm_pose_framework.launch.py` |
+| Verified three-motor real-hardware fallback | `src/motor_control_pkg/launch/three_motor_real.launch.py` |
+| Three-motor pose-framework development launch | `src/motor_control_pkg/launch/three_motor_pose_framework.launch.py` |
+
+Runtime poses are stored in `~/.ros/arm_poses.json`. This is runtime data, not
+the repository template, and should normally be changed through `arm_pose_cli`
+instead of edited by hand.
+
+### 3. Run the mock pose/sequence workflow (no motors required)
+
+After a successful build, open two terminals. Every newly opened terminal must
+source ROS2 and the workspace before using package commands.
+
+Terminal 1 — start the two mock motor-control nodes and startup-pose node:
+
+```bash
+cd ~/ros2_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch motor_control_pkg dual_arm_pose_framework.launch.py
+```
+
+Terminal 2 — open the interactive pose CLI:
+
+```bash
+cd ~/ros2_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 run motor_control_pkg arm_pose_cli --ros-args -p mode:=dual
+```
+
+Inside `arm_pose_cli`, a minimal command-flow check is:
+
+```text
+arm> save 1 mock_step_1
+arm> save 2 mock_step_2
+arm> list
+arm> sequence 0 1 2 1 0
+```
+
+Mock mode checks pose lookup, Action completion, ordering, and error handling.
+It does not validate physical clearance, gravity, calibration, or motor safety.
+
+### 4. Scan motors
 
 ```bash
 ros2 run motor_control_pkg scan_ids --port /dev/ttyUSB0
 ```
 
-### 3. Read-only homing calculation
+### 5. Read-only homing calculation
 
 ```bash
 ros2 run motor_control_pkg check_home --id 4 --port /dev/ttyUSB0
@@ -426,7 +493,7 @@ ros2 run motor_control_pkg check_home --id 4 --port /dev/ttyUSB0
 
 `check_home` calculates the expected homing target without sending a move command.
 
-### 4. Verified three-motor real-hardware launch
+### 6. Verified three-motor real-hardware launch
 
 ```bash
 ros2 launch motor_control_pkg three_motor_real.launch.py
@@ -434,7 +501,7 @@ ros2 launch motor_control_pkg three_motor_real.launch.py
 
 This is the current hardware-verified fallback path for IDs 1, 2, and 4 and physically homes them to the saved encoder-zero references.
 
-### 5. Persistent direct bench CLI
+### 7. Persistent direct bench CLI
 
 ```bash
 ros2 run motor_control_pkg arm_cli
@@ -450,21 +517,6 @@ Example:
 
 ```text
 arm> 10 -10 20 20
-```
-
-### 6. 8-axis mock pose-framework launch
-
-```bash
-ros2 launch motor_control_pkg dual_arm_pose_framework.launch.py
-```
-
-This launch is intentionally mock-only until all final motors have verified calibration values.
-
-In another terminal:
-
-```bash
-source ~/iroi_ws/install/setup.bash
-ros2 run motor_control_pkg arm_pose_cli --ros-args -p mode:=dual
 ```
 
 ---
@@ -554,6 +606,9 @@ This prevents locally taught poses from being unintentionally committed to Git.
 - [x] Pose save/list/show/playback in mock mode
 - [x] Teach-mode motion interlock in mock mode
 - [x] Teach OFF current-position hold logic in mock mode
+- [x] Sequential pose command implementation and package build
+- [ ] Validate sequential pose playback in mock mode
+- [ ] Validate sequential pose playback on real hardware
 - [ ] Map all final motor IDs to physical joints
 - [ ] Calibrate every final motor's absolute encoder zero
 - [ ] Validate MG5010E-i36 ratio / wrap behavior
