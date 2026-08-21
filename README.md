@@ -352,8 +352,10 @@ arm> teach left off
 sequence stops on the first error or timeout. It currently uses
 `default_pose_speed_dps`; per-sequence speed selection is not yet supported.
 
-The sequential command has been implemented and passes the package build. Mock
-and real-hardware motion validation are still pending.
+The sequential command has been implemented and passes the package build. On
+2026-08-21, `sequence 0 1 0` completed successfully on the Raspberry Pi in
+ROS2 mock mode, confirming ordered dispatch and Action completion. Real-hardware
+motion validation is still pending.
 
 When a stored pose value is `null`, that motor is not given a new pose target; its current calibrated position is held instead.
 
@@ -607,7 +609,7 @@ This prevents locally taught poses from being unintentionally committed to Git.
 - [x] Teach-mode motion interlock in mock mode
 - [x] Teach OFF current-position hold logic in mock mode
 - [x] Sequential pose command implementation and package build
-- [ ] Validate sequential pose playback in mock mode
+- [x] Validate sequential pose playback in mock mode (`sequence 0 1 0`)
 - [ ] Validate sequential pose playback on real hardware
 - [ ] Map all final motor IDs to physical joints
 - [ ] Calibrate every final motor's absolute encoder zero

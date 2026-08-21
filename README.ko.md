@@ -351,8 +351,10 @@ pose를 전송합니다. 오류 또는 timeout이 발생하면 남은 sequence�
 현재는 `default_pose_speed_dps`를 사용하며 sequence별 속도 지정은 아직
 지원하지 않습니다.
 
-순차 실행 명령의 코드 구현과 패키지 빌드는 완료했습니다. Mock 및 실물
-하드웨어 동작 검증은 아직 진행하지 않았습니다.
+순차 실행 명령의 코드 구현과 패키지 빌드는 완료했습니다. 2026-08-21에
+Raspberry Pi의 ROS2 mock mode에서 `sequence 0 1 0`을 실행해 입력 순서와
+Action 완료 흐름을 검증했습니다. 실물 하드웨어 동작 검증은 아직 진행하지
+않았습니다.
 
 pose 값이 `null`인 모터는 새 목표각을 주지 않고 현재 calibration된 위치를 유지합니다.
 
@@ -612,7 +614,7 @@ motor_control_pkg/config/poses.json
 - [x] mock Teach mode 이동 차단
 - [x] mock Teach OFF current-position hold
 - [x] 순차 pose 명령 구현 및 패키지 빌드
-- [ ] 순차 pose 실행 mock 검증
+- [x] 순차 pose 실행 mock 검증 (`sequence 0 1 0`)
 - [ ] 순차 pose 실행 실물 하드웨어 검증
 - [ ] 최종 모터 ID ↔ 실제 joint 매핑
 - [ ] 최종 8모터별 절대 encoder zero calibration
