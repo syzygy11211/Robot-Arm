@@ -4,7 +4,7 @@
 
 > LK-TECH RS485 서보모터 기반 8자유도 양팔 로봇팔 제어 프로젝트입니다. 기존에 실물 검증한 저수준 모터 프로토콜은 유지하고, 그 위에 ROS2 Humble 기반 다축 제어, pose 저장/재생, startup pose, teach mode 계층을 추가하고 있습니다.
 
-**상태: 🚧 In Progress** — Raspberry Pi 4 + LC529 기반 ID 1, 2, 4 3축 실물 제어는 검증 완료했습니다. 새로 추가한 8축 pose/teach framework는 ROS2 mock mode에서 검증했습니다. 최종 i10/i36 혼합 8모터 실물 통합, 각 모터별 calibration, pose/teach 실물 검증은 아직 진행 전입니다.
+**상태: 🚧 In Progress** — Raspberry Pi 4 + LC529에서 ID 1–4의 i10/i36 혼합 4축 실물 통신과 절대엔코더 homing을 검증했습니다. 8축 pose/teach framework는 mock 검증을 마쳤으며, 최종 양팔 2버스 8모터 조립과 pose/teach 실물 검증은 아직 남아 있습니다.
 
 ---
 
@@ -12,7 +12,7 @@
 
 ### 실물 하드웨어 — 검증 완료
 
-**2026-08-14 기준** 다음 실물 경로를 검증했습니다.
+**2026-08-24 기준** 다음 실물 경로를 검증했습니다.
 
 ```text
 Raspberry Pi 4
@@ -21,7 +21,8 @@ LC529 USB-RS485 (/dev/ttyUSB0, 115200 baud)
    ↓ single RS485 bus
 ├── MG4010E-i10 (ID 1)
 ├── MG4010E-i10 (ID 2)
-└── MG5010E-i10 (ID 4)
+├── MG5010E-i36 (ID 3)
+└── MG5010E-i36 (ID 4)
    ↓
 외부 24 V 모터 전원
 ```
@@ -30,13 +31,16 @@ LC529 USB-RS485 (/dev/ttyUSB0, 115200 baud)
 
 - [x] Raspberry Pi 4 + Ubuntu 22.04 + ROS2 Humble
 - [x] LC529 `/dev/ttyUSB0` 통신
-- [x] ID 1, 2, 4 동시 검색 및 모델 응답 확인
+- [x] ID 1–4 동시 검색 및 모델 응답 확인
 - [x] 실물 모터 상태값/각도 읽기
-- [x] ID 1, 2, 4 절대엔코더 기반 자동 Homing
+- [x] 4모터 전체의 무이동 homing delta 계산 검증
+- [x] 모터 컨트롤러의 영구 절대좌표 `0x94 = 0°`로 4축 자동 Homing
+- [x] 한 버스에서 i10(`3600°` 주기) + i36(`12960°` 주기) 혼합 감속비 적용
+- [x] raw encoder 명령에 응답하지 않는 i36 펌웨어를 위한 `0x90` optional 처리
 - [x] ROS2 `MoveJoint` Action 목표각 이동
 - [x] persistent `arm_cli` 저지연 명령
 - [x] 이동 완료 → 다음 명령 순차 제어
-- [x] 가장 오래 걸리는 축 기준 3축 synchronized arrival
+- [x] Homing 후 4축 calibrated `joint_states` 0점 확인
 - [ ] 최종 좌/우 2개 RS485 bus 실물 검증
 - [ ] 최종 8모터 실물 통합
 
@@ -46,7 +50,7 @@ LC529 USB-RS485 (/dev/ttyUSB0, 115200 baud)
 motor_control_pkg/config/zero_config_i10_verified.json
 ```
 
-현재 벤치 모터는 모두 **감속비 10:1**, **논리 주기 3600 motor-deg** 기준입니다. 최종 MG5010은 i36 예정이므로 감속비와 wrap 관련 값은 모터별 config에서 관리합니다.
+현재 벤치는 MG4010E-i10 ID 1–2와 MG5010E-i36 ID 3–4 구성입니다. 감속비와 논리 주기는 calibration 파일에서 모터별로 관리합니다. 파일명은 과거 이름을 유지하지만 현재 내용은 검증된 혼합 4모터 구성입니다.
 
 ### 8축 pose/teach framework — mock 검증 완료
 
@@ -132,7 +136,7 @@ Raspberry Pi와 LC529는 통신/제어만 담당합니다. 모터 구동용 24 V
 | Service | `/{arm}/torque` | `std_srvs/SetBool` | 저수준 팔 단위 torque ON/OFF |
 | Service | `/{arm}/teach` | `std_srvs/SetBool` | hand-guiding용 teach mode 전환 |
 | Service | `/{arm}/sync_reference` | `std_srvs/Trigger` | 물리 이동 없이 현재 세션의 0x92 기준 복원 |
-| Service | `/{arm}/set_zero` | `std_srvs/Trigger` | 물리 encoder zero 재캘리브레이션 및 저장 |
+| Service | `/{arm}/set_zero` | `std_srvs/Trigger` | 현재 `0x94` 값을 ROS 소프트웨어 영점으로 저장; 모터 내부 영점은 변경하지 않음 |
 | Service | `/{arm}/home` | `std_srvs/Trigger` | 저장된 encoder zero 위치로 실제 이동 |
 | Action | `/{arm}/move_to` | `iroi_interfaces/action/MoveJoint` | 다축 목표각 이동 + feedback/result |
 
@@ -181,7 +185,7 @@ zero_raw
 loop_period_deg
 ```
 
-이 값은 해당 모터의 물리 좌표계를 정의합니다. 모터를 교체하면 새 모터 기준으로 다시 calibration해야 하며, 기존 모터의 영점값을 그대로 복사해서 사용하면 안 됩니다.
+`zero_single_deg`가 ROS 좌표 기준을 정의합니다. 현재 검증 파일은 모터 컨트롤러의 영구 내부 절대좌표인 `0x94 = 0°`를 그대로 사용합니다. `zero_encoder`와 `zero_raw`는 선택적인 진단값이므로 `null`일 수 있으며, homing 계산에는 `zero_single_deg`와 `loop_period_deg`를 사용합니다.
 
 ### 2. 로봇 pose
 
@@ -305,6 +309,14 @@ ros2 launch motor_control_pkg three_motor_pose_framework.launch.py
 
 ### Pose CLI
 
+현재 namespace 없는 4모터 벤치 노드에서는 다음처럼 실행합니다.
+
+```bash
+ros2 run motor_control_pkg arm_pose_cli
+```
+
+최종 namespace 기반 양팔 시스템에서는 다음처럼 실행합니다.
+
 8축 CLI 실행:
 
 ```bash
@@ -341,8 +353,11 @@ arm> save 1 wave
 arm> show 1
 arm> pose 1 20
 arm> sequence 0 1 2 3 2 1 0
-arm> teach left on
-arm> teach left off
+arm> teach test on
+arm> save 1 ready
+arm> teach test off
+arm> pose 1 10
+arm> sequence 0 1 2 1 0
 ```
 
 `sequence`는 이동을 시작하기 전에 모든 pose ID가 존재하는지 확인합니다.
@@ -492,13 +507,13 @@ ros2 run motor_control_pkg check_home --id 4 --port /dev/ttyUSB0
 
 `check_home`은 예상 Homing target만 계산하고 이동 명령은 보내지 않습니다.
 
-### 6. 현재 검증된 3모터 실물 launch
+### 6. 현재 4모터 실물 노드 실행
 
 ```bash
-ros2 launch motor_control_pkg three_motor_real.launch.py
+ros2 run motor_control_pkg motor_control_node
 ```
 
-ID 1, 2, 4를 대상으로 현재 실물 검증된 fallback 경로이며, 저장된 encoder zero로 실제 Homing합니다.
+현재 기본값은 실제 모드로 `/dev/ttyUSB0`을 열고, ID 1–4의 검증된 i10/i36 혼합 calibration을 읽어 영구 절대좌표 `0x94 = 0°`로 실제 Homing합니다. 명령 실행 직후 모터가 움직일 수 있습니다.
 
 ### 7. Persistent 직접 제어 CLI
 
@@ -509,14 +524,38 @@ ros2 run motor_control_pkg arm_cli
 입력 형식:
 
 ```text
-ID1_angle  ID2_angle  ID4_angle  speed
+ID1_angle  ID2_angle  ID3_angle  ID4_angle  speed
 ```
 
 예:
 
 ```text
-arm> 10 -10 20 20
+arm> 5 0 0 0 10
+arm> 0 0 0 0 10
 ```
+
+### 8. Teach, pose 저장, sequence 실행
+
+`motor_control_node`를 계속 실행한 상태에서 다른 터미널을 엽니다.
+
+```bash
+cd ~/iroi_ws
+source install/setup.bash
+ros2 run motor_control_pkg arm_pose_cli
+```
+
+대화형 작업 순서:
+
+```text
+arm> teach test on       # torque OFF; 팔을 물리적으로 지지
+arm> status              # 현재 calibration된 관절각 확인
+arm> save 1 ready        # 현재 자세를 Pose 1로 저장
+arm> teach test off      # torque ON + 현재 위치 HOLD
+arm> pose 1 10           # Pose 1을 10 deg/s로 재생
+arm> sequence 0 1 2 1 0 # 저장된 pose를 순서대로 실행
+```
+
+실행 중 pose는 `~/.ros/arm_poses.json`에 저장됩니다. 현재 4모터 시험에서는 ID 5–8이 `null`로 남습니다. i36 감속기는 토크를 꺼도 역구동이 매우 뻑뻑할 수 있으므로 출력축을 억지로 돌리지 말고, 중력에 떨어지지 않도록 기구를 반드시 지지해야 합니다.
 
 ---
 
@@ -608,7 +647,8 @@ motor_control_pkg/config/poses.json
 - [x] 실물 ROS2 Action 목표각 이동
 - [x] persistent `arm_cli`
 - [x] 한 RS485 bus에서 다중 모터 검증
-- [x] 3축 synchronized arrival
+- [x] 한 RS485 bus에서 i10/i36 혼합 4모터 절대영점 Homing
+- [x] 4축 calibration 및 CLI 구성
 - [x] 8축 pose database framework
 - [x] mock pose 저장/list/show/playback
 - [x] mock Teach mode 이동 차단
@@ -618,8 +658,9 @@ motor_control_pkg/config/poses.json
 - [ ] 순차 pose 실행 실물 하드웨어 검증
 - [ ] 최종 모터 ID ↔ 실제 joint 매핑
 - [ ] 최종 8모터별 절대 encoder zero calibration
-- [ ] MG5010E-i36 ratio / wrap 실물 검증
-- [ ] mixed i10/i36 실물 검증
+- [x] MG5010E-i36 homing용 ratio / wrap 실물 검증
+- [x] mixed i10/i36 homing 실물 검증
+- [ ] 4축 직접 CLI 이동 실물 검증
 - [ ] `reference_only` startup 실물 검증
 - [ ] 8축 Pose 0 (`attention`) 실제 값 저장
 - [ ] 기구적으로 지지된 상태에서 Teach mode 실물 검증
