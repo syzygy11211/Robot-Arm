@@ -256,7 +256,7 @@ shortest_delta(...)
 실제로 해당 zero 위치까지 이동
 ```
 
-현재 실물 검증 fallback launch:
+Legacy 3-motor launch — 현재 구성에서는 사용하지 않음:
 
 ```bash
 ros2 launch motor_control_pkg three_motor_real.launch.py
