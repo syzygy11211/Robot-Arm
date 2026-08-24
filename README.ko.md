@@ -256,7 +256,7 @@ shortest_delta(...)
 실제로 해당 zero 위치까지 이동
 ```
 
-> **Legacy:** 이 launch 파일은 이전 3모터 구성(ID 1, 2, 4)에서 사용했습니다. 현재 i10/i36 혼합 4모터 구성에서는 사용하지 마세요:
+> **Legacy:** 이 launch 파일은 이전 3모터 구성(ID 1, 2, 4)에서 사용했습니다. 현재 i10/i36 혼합 4모터 구성에서는 사용하지 마세요
 
 ```bash
 ros2 launch motor_control_pkg three_motor_real.launch.py
