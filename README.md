@@ -258,7 +258,7 @@ map saved zero into current 0x92 frame
 physically move to that zero
 ```
 
-This is still used by the verified fallback launch:
+> **Legacy:** This launch file was used for the previous three-motor setup (IDs 1, 2, and 4). Do not use it with the current four-motor mixed-i10/i36 configuration.
 
 ```bash
 ros2 launch motor_control_pkg three_motor_real.launch.py
