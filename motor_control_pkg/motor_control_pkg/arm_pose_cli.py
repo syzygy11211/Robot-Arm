@@ -40,7 +40,7 @@ class ArmSpec:
 
 
 TEST_SPECS = (
-    ArmSpec("test", "/test_arm", (1, 2, 4)),
+    ArmSpec("test", "", (1, 2, 3, 4)),
 )
 
 DUAL_SPECS = (

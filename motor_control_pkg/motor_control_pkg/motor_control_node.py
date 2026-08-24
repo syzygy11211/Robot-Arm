@@ -43,7 +43,7 @@ class MotorControlNode(Node):
         # ------------------------------------------------------------------
         self.declare_parameter('serial_port', '/dev/ttyUSB0')
         self.declare_parameter('baudrate', 115200)
-        self.declare_parameter('arm_name', 'left_arm')
+        self.declare_parameter('arm_name', 'right_arm')
         self.declare_parameter('motor_ids', [1, 2, 3, 4])
         self.declare_parameter('joint_names', ['joint1', 'joint2', 'joint3', 'joint4'])
         self.declare_parameter('polling_hz', 30.0)
@@ -52,23 +52,26 @@ class MotorControlNode(Node):
         self.declare_parameter('max_speed_dps', 60.0)
 
         # mock_mode=True에서는 serial을 열지 않고 homing도 실제로 수행하지 않는다.
-        self.declare_parameter('mock_mode', True)
+        self.declare_parameter('mock_mode', False)
 
         # 기존 검증된 zero_config.json 형식의 파일 경로.
         # real + auto_home에서는 이 파일이 반드시 필요하다.
-        self.declare_parameter('zero_config_path', '')
+        self.declare_parameter(
+            'zero_config_path',
+            '/home/young/iroi_ws/src/motor_control_pkg/config/zero_config_i10_verified.json'
+        )
 
         # real mode 시작 시 저장된 0x94 절대 영점으로 자동 복귀할지 여부.
         self.declare_parameter('auto_home', True)
 
         # pose-framework: reference_only startup
         # ''=legacy auto_home, home=physical zero move, reference_only=no-motion sync, disabled=none
-        self.declare_parameter('startup_mode', '')
+        self.declare_parameter('startup_mode', 'home')
         self.declare_parameter('teach_hold_speed_dps', 10.0)
 
         # Homing 속도는 출력축 기준 deg/s. 실제 0xA4에는 ratio를 곱한 모터축 속도로 보낸다.
         self.declare_parameter('homing_speed_dps', 30.0)
-        self.declare_parameter('homing_timeout_sec', 8.0)
+        self.declare_parameter('homing_timeout_sec', 20.0)
         self.declare_parameter('homing_settle_deg', 0.05)
         self.declare_parameter('homing_settle_count', 6)
 
@@ -284,10 +287,14 @@ class MotorControlNode(Node):
                 )
 
             entry = by_id[mid]
-            if not self.mock_mode and entry.get('zero_single_deg') is None:
+            if (
+                not self.mock_mode
+                and entry.get('zero_single_deg') is None
+                and self.startup_mode != 'disabled'
+            ):
                 raise RuntimeError(
                     f"motor_id={mid} ({entry['name']})의 zero_single_deg가 없습니다. "
-                    f'물리 영점을 먼저 저장해야 합니다.'
+                    f'물리 영점을 먼저 저장하거나 startup_mode:=disabled로 시작하세요.'
                 )
             selected[mid] = entry
 
@@ -701,47 +708,79 @@ class MotorControlNode(Node):
         return response
 
     def set_zero_callback(self, request, response):
-        """현재 물리 위치를 새로운 절대 영점으로 저장한다.
+        """현재 물리 위치를 새로운 절대 영점으로 지정한다.
 
-        기존 set_zero.py와 같은 의미다. real mode에서는 각 모터의 0x94 절대각과 encoder/raw를
-        읽어 zero_config.json의 ``zero_single_deg`` / ``zero_encoder`` / ``zero_raw``를 갱신한다.
+        real mode에서는 각 모터의 0x94 절대각을 읽어
+        zero_config.json의 zero_single_deg에 저장한다.
 
-        이 서비스는 '매 부팅마다' 호출하는 기능이 아니다. 조립 위치가 바뀌거나 물리 영점을
-        다시 캘리브레이션할 때만 사용한다.
+        0x90 encoder read는 일부 모터/펌웨어에서 응답하지 않을 수 있으므로
+        optional로 처리한다. 실패하면 zero_encoder / zero_raw는 None으로 저장한다.
+
+        이 서비스는 매 부팅마다 호출하는 기능이 아니다.
+        조립 위치가 바뀌거나 물리 영점을 다시 캘리브레이션할 때만 호출한다.
         """
         if self.mock_mode:
             for mid in self.motor_ids:
                 self.mock_angles[mid] = 0.0
                 self.zero_92[mid] = 0.0
+
             self.homed = True
             response.success = True
             response.message = 'mock set_zero 완료'
             return response
-
         try:
             with self.motion_lock:
                 new_values = {}
+
                 for mid in self.motor_ids:
                     with self.serial_lock:
+                        # 모터 모델 확인
                         info = self.motors[mid].read_info()
+
+                        # homing 기준으로 실제 사용하는 절대각
                         zero_single = self.motors[mid].read_single_angle()
-                        enc = self.motors[mid].read_encoder()
+
+                        # 0x90 encoder read는 일부 모터/펌웨어에서 응답하지 않을 수 있으므로 optional로 처리한다.
+                        try:
+                            enc = self.motors[mid].read_encoder()
+                        except Exception as e:
+                            self.get_logger().warn(
+                                f'ID {mid}: 0x90 encoder read 실패. '
+                                f'zero_encoder/zero_raw는 null로 저장합니다: {e}'
+                            )
+                            enc = {
+                                'encoder': None,
+                                'raw': None,
+                            }
+
+                        # 현재 세션의 0x92 좌표
                         cur_92 = self.motors[mid].read_multi_angle()
 
+                    # config 모델명과 실제 모터 모델 확인
                     expected_model = self.motor_cfg[mid].get('model')
                     reported_model = info.get('motor', '')
-                    if expected_model and expected_model not in reported_model and reported_model not in expected_model:
+
+                    if (
+                        expected_model
+                        and expected_model not in reported_model
+                        and reported_model not in expected_model
+                    ):
                         raise RuntimeError(
-                            f'ID {mid} 모델 불일치: config={expected_model}, actual={reported_model}'
+                            f'ID {mid}: 모델 불일치: '
+                            f'config={expected_model}, actual={reported_model}'
                         )
 
-                    new_values[mid] = (zero_single, enc, cur_92)
+                    new_values[mid] = (
+                        zero_single,
+                        enc,
+                        cur_92,
+                    )
 
-                # 모든 모터 읽기가 성공한 뒤에만 메모리/파일을 갱신한다.
+                # 모든 모터의 필수값(0x94, 0x92) 읽기가 성공한 뒤에만 저장
                 for mid, (zero_single, enc, cur_92) in new_values.items():
                     self.motor_cfg[mid]['zero_single_deg'] = zero_single
-                    self.motor_cfg[mid]['zero_encoder'] = enc['encoder']
-                    self.motor_cfg[mid]['zero_raw'] = enc['raw']
+                    self.motor_cfg[mid]['zero_encoder'] = enc.get('encoder')
+                    self.motor_cfg[mid]['zero_raw'] = enc.get('raw')
                     self.zero_92[mid] = cur_92
 
                 self._save_motor_config()
@@ -749,20 +788,24 @@ class MotorControlNode(Node):
 
             response.success = True
             response.message = (
-                f'절대 영점 저장 완료: '
+                '절대 영점 저장 완료: '
                 + ', '.join(
-                    f'ID {mid}=0x94 {self.motor_cfg[mid]["zero_single_deg"]:.2f}deg'
+                    f'ID {mid}=0x94 '
+                    f'{self.motor_cfg[mid]["zero_single_deg"]:.2f} deg'
                     for mid in self.motor_ids
                 )
             )
+
             self.get_logger().warn(
-                f'[{self.arm_name}] {response.message} -> {self.zero_config_path}'
+                f'[{self.arm_name}] {response.message} '
+                f'-> {self.zero_config_path}'
             )
         except Exception as e:
             response.success = False
             response.message = f'set_zero 실패: {e}'
-            self.get_logger().error(f'[{self.arm_name}] {response.message}')
-
+            self.get_logger().error(
+                f'[{self.arm_name}] {response.message}'
+            )
         return response
 
     def cancel_move_callback(self, goal_handle):

@@ -3,13 +3,13 @@
   "motors": [
     {
       "name": "motor1",
-      "model": "MG5010E-i10",
-      "motor_id": 4,
+      "model": "MG4010E-i10",
+      "motor_id": 1,
       "ratio": 10.0,
       "max_speed_dps": 60.0,
-      "zero_single_deg": 3599.98,
-      "zero_encoder": 65533,
-      "zero_raw": 65533,
+      "zero_single_deg": 0.0,
+      "zero_encoder": null,
+      "zero_raw": null,
       "loop_period_deg": 3600.0
     },
     {
@@ -19,20 +19,31 @@
       "ratio": 10.0,
       "max_speed_dps": 60.0,
       "zero_single_deg": 0.0,
-      "zero_encoder": 8782,
-      "zero_raw": 8782,
+      "zero_encoder": null,
+      "zero_raw": null,
       "loop_period_deg": 3600.0
     },
     {
       "name": "motor3",
-      "model": "MG4010E-i10",
-      "motor_id": 1,
-      "ratio": 10.0,
+      "model": "MG5010E-i36",
+      "motor_id": 3,
+      "ratio": 36.0,
       "max_speed_dps": 60.0,
       "zero_single_deg": 0.0,
-      "zero_encoder": 56426,
-      "zero_raw": 56426,
-      "loop_period_deg": 3600.0
+      "zero_encoder": null,
+      "zero_raw": null,
+      "loop_period_deg": 12960.0
+    },
+    {
+      "name": "motor4",
+      "model": "MG5010E-i36",
+      "motor_id": 4,
+      "ratio": 36.0,
+      "max_speed_dps": 60.0,
+      "zero_single_deg": 0.0,
+      "zero_encoder": null,
+      "zero_raw": null,
+      "loop_period_deg": 12960.0
     }
   ]
 }
