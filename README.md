@@ -4,15 +4,15 @@
 
 > ROS2 Humble control stack for an 8-DOF dual-arm robot using LK-TECH RS485 servo motors. The project keeps the already hardware-validated low-level motor protocol and adds ROS2-based multi-axis control, persistent pose storage, startup-pose handling, and teach-mode support above it.
 
-**Status: 🚧 In Progress** — Four-axis mixed-i10/i36 real-hardware communication and absolute-encoder homing are verified on Raspberry Pi 4 + LC529 for IDs 1–4. The 8-axis pose/teach framework is mock-verified; final dual-bus 8-motor assembly and real-hardware pose/teach validation remain pending.
+**Status: 🚧 In Progress** — Motor models, reduction ratios, absolute-encoder frames, and individual homing to the controller's internal `0x94 = 0°` reference are verified for IDs 1–8 on Raspberry Pi 4 + LC529. The 8-axis pose/teach framework is mock-verified; simultaneous dual-bus integration of all eight motors and real-hardware pose/teach validation remain pending.
 
 ---
 
 ## Current Validation Status
 
-### Real hardware — verified
+### Real hardware — verified in stages
 
-As of **2026-08-24**, the following real-hardware path has been validated:
+As of **2026-08-27**, the following real-hardware path has been validated in stages:
 
 ```text
 Raspberry Pi 4
@@ -27,16 +27,27 @@ LC529 USB-RS485 (/dev/ttyUSB0, 115200 baud)
 External 24 V motor supply
 ```
 
+The same LC529 wiring was then switched to the new motors to validate IDs 5–8:
+
+```text
+├── MG4010E-i10 (ID 5)
+├── MG4010E-i10 (ID 6)
+├── MG5010E-i36 (ID 7)
+└── MG5010E-i36 (ID 8)
+```
+
+IDs 1–4 and IDs 5–8 have each been hardware-validated, but this is not yet the final test with all eight motors connected simultaneously across two RS485 buses.
+
 Verified items:
 
 - [x] Ubuntu 22.04 + ROS2 Humble on Raspberry Pi 4
 - [x] LC529 communication on `/dev/ttyUSB0`
-- [x] Simultaneous discovery/model reads for IDs 1–4
+- [x] Discovery, fixed IDs, and model reads for IDs 1–8
 - [x] Real motor state and angle reads
-- [x] Read-only homing-delta verification for all four motors
-- [x] Automatic homing of all four motors to the controller's persistent `0x94 = 0°` reference
+- [x] Read-only homing-delta verification for IDs 1–8
+- [x] Individual homing of IDs 1–8 to the controller's persistent `0x94 = 0°` reference
 - [x] Mixed reduction ratios on one bus: i10 (`3600°` period) + i36 (`12960°` period)
-- [x] Optional `0x90` handling for i36 firmware that does not answer the raw-encoder command
+- [x] Optional `0x90` handling for firmware that does not answer the raw-encoder command
 - [x] ROS2 `MoveJoint` Action target-angle motion
 - [x] Persistent low-latency `arm_cli`
 - [x] Sequential move-complete → next-command operation
@@ -50,7 +61,7 @@ Current verified calibration file:
 motor_control_pkg/config/zero_config_i10_verified.json
 ```
 
-The current bench uses MG4010E-i10 IDs 1–2 and MG5010E-i36 IDs 3–4. Their per-motor ratios and logical periods are stored in the calibration file. Despite its legacy filename, the file now contains the verified mixed 4-motor configuration.
+The file now contains verified entries for MG4010E-i10 IDs 1, 2, 5, and 6 and MG5010E-i36 IDs 3, 4, 7, and 8. Reduction ratios and logical periods remain per-motor calibration values. Despite its legacy filename, the file now covers the full eight-motor configuration.
 
 ### 8-axis pose/teach framework — mock verified
 
@@ -186,6 +197,8 @@ loop_period_deg
 ```
 
 `zero_single_deg` defines the ROS coordinate reference. The current verified file deliberately uses the controller's persistent internal `0x94 = 0°` reference. `zero_encoder` and `zero_raw` are optional diagnostics and may be `null`; homing uses `zero_single_deg` and `loop_period_deg`.
+
+When using the internal absolute `0x94 = 0°` reference, do not copy the current `0x94` reading into `zero_single_deg` and do not call `/set_zero`. `/set_zero` is a separate calibration operation used only when the current physical position should become a new ROS software zero.
 
 ### 2. Robot poses
 
@@ -502,15 +515,27 @@ It does not validate physical clearance, gravity, calibration, or motor safety.
 ros2 run motor_control_pkg scan_ids --port /dev/ttyUSB0
 ```
 
-### 5. Read-only homing calculation
+### 5. Probe motor information and encoder frames
 
 ```bash
-ros2 run motor_control_pkg check_home --id 4 --port /dev/ttyUSB0
+ros2 run motor_control_pkg probe_motors --port /dev/ttyUSB0 --ids 5 6 7 8
+```
+
+`probe_motors` prints each motor's `0x12` information, persistent `0x94` angle, `0x90` raw encoder, and `0x92` multi-turn angle. It sends no `motor_on`, `motor_off`, or `0xA4` motion command and does not modify JSON. Do not run it concurrently with another program using the same serial port.
+
+Some firmware does not answer `0x90`, so `encoder (0x90): FAIL` may be expected. Normal `0x94` and `0x92` readings are sufficient for internal absolute-zero mapping and homing.
+
+### 6. Read-only homing calculation
+
+```bash
+ros2 run motor_control_pkg check_home \
+  --config ~/iroi_ws/src/motor_control_pkg/config/zero_config_i10_verified.json \
+  --id 8
 ```
 
 `check_home` calculates the expected homing target without sending a move command.
 
-### 6. Current four-motor real-hardware node
+### 7. Current four-motor real-hardware node
 
 ```bash
 ros2 run motor_control_pkg motor_control_node
@@ -518,7 +543,7 @@ ros2 run motor_control_pkg motor_control_node
 
 The current defaults open `/dev/ttyUSB0` in real mode, load the verified mixed-i10/i36 calibration for IDs 1–4, and physically home to the persistent `0x94 = 0°` references. Starting this command may move the motors immediately.
 
-### 7. Persistent direct bench CLI
+### 8. Persistent direct bench CLI
 
 ```bash
 ros2 run motor_control_pkg arm_cli
@@ -537,7 +562,7 @@ arm> 5 0 0 0 10
 arm> 0 0 0 0 10
 ```
 
-### 8. Teach, save poses, and run a sequence
+### 9. Teach, save poses, and run a sequence
 
 Keep `motor_control_node` running, then open another terminal:
 
@@ -585,6 +610,7 @@ iroi_ws/src/
 │   │   ├── arm_startup_pose.py
 │   │   ├── arm_cli.py
 │   │   ├── scan_ids.py
+│   │   ├── probe_motors.py
 │   │   └── check_home.py
 │   ├── package.xml
 │   ├── setup.cfg
@@ -599,6 +625,7 @@ Installed console scripts include:
 ```text
 motor_control_node
 scan_ids
+probe_motors
 check_home
 arm_cli
 arm_pose_cli
@@ -644,6 +671,8 @@ This prevents locally taught poses from being unintentionally committed to Git.
 - [x] Multi-motor validation on one RS485 bus
 - [x] Mixed i10/i36 four-motor absolute-zero homing on one RS485 bus
 - [x] Four-axis calibration and CLI configuration
+- [x] Verify final ID 1–8 models, reduction ratios, and encoder frames
+- [x] Individually home IDs 1–8 to the controller's internal `0x94 = 0°` reference
 - [x] 8-axis pose database framework
 - [x] Pose save/list/show/playback in mock mode
 - [x] Teach-mode motion interlock in mock mode
@@ -652,7 +681,7 @@ This prevents locally taught poses from being unintentionally committed to Git.
 - [x] Validate sequential pose playback in mock mode (`sequence 0 1 0`)
 - [ ] Validate sequential pose playback on real hardware
 - [ ] Map all final motor IDs to physical joints
-- [ ] Calibrate every final motor's absolute encoder zero
+- [ ] Map controller zero references to final mechanically assembled joint-zero poses
 - [x] Validate MG5010E-i36 ratio / wrap behavior for homing
 - [x] Validate mixed i10/i36 homing operation
 - [ ] Validate four-axis direct CLI motion on real hardware

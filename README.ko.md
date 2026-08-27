@@ -4,15 +4,15 @@
 
 > LK-TECH RS485 서보모터 기반 8자유도 양팔 로봇팔 제어 프로젝트입니다. 기존에 실물 검증한 저수준 모터 프로토콜은 유지하고, 그 위에 ROS2 Humble 기반 다축 제어, pose 저장/재생, startup pose, teach mode 계층을 추가하고 있습니다.
 
-**상태: 🚧 In Progress** — Raspberry Pi 4 + LC529에서 ID 1–4의 i10/i36 혼합 4축 실물 통신과 절대엔코더 homing을 검증했습니다. 8축 pose/teach framework는 mock 검증을 마쳤으며, 최종 양팔 2버스 8모터 조립과 pose/teach 실물 검증은 아직 남아 있습니다.
+**상태: 🚧 In Progress** — Raspberry Pi 4 + LC529에서 ID 1–8의 모델, 감속비, 절대엔코더 좌표와 컨트롤러 내부 `0x94 = 0°` 기준 개별 Homing을 검증했습니다. 8축 pose/teach framework는 mock 검증을 마쳤으며, 최종 양팔 2버스에서 8모터를 동시에 연결한 실물 통합과 pose/teach 검증은 아직 남아 있습니다.
 
 ---
 
 ## 현재 검증 상태
 
-### 실물 하드웨어 — 검증 완료
+### 실물 하드웨어 — 단계별 검증 완료
 
-**2026-08-24 기준** 다음 실물 경로를 검증했습니다.
+**2026-08-27 기준** 다음 실물 경로를 단계별로 검증했습니다.
 
 ```text
 Raspberry Pi 4
@@ -27,16 +27,27 @@ LC529 USB-RS485 (/dev/ttyUSB0, 115200 baud)
 외부 24 V 모터 전원
 ```
 
+이후 같은 LC529 배선을 새 모터로 교체하여 다음 ID 5–8도 확인했습니다.
+
+```text
+├── MG4010E-i10 (ID 5)
+├── MG4010E-i10 (ID 6)
+├── MG5010E-i36 (ID 7)
+└── MG5010E-i36 (ID 8)
+```
+
+ID 1–4와 ID 5–8은 각각 실물 검증했지만, 아직 8모터를 두 RS485 bus에 동시에 연결한 최종 구성 검증은 아닙니다.
+
 검증 완료 항목:
 
 - [x] Raspberry Pi 4 + Ubuntu 22.04 + ROS2 Humble
 - [x] LC529 `/dev/ttyUSB0` 통신
-- [x] ID 1–4 동시 검색 및 모델 응답 확인
+- [x] ID 1–8 검색, 고정 ID 및 모델 응답 확인
 - [x] 실물 모터 상태값/각도 읽기
-- [x] 4모터 전체의 무이동 homing delta 계산 검증
-- [x] 모터 컨트롤러의 영구 절대좌표 `0x94 = 0°`로 4축 자동 Homing
+- [x] ID 1–8의 무이동 Homing delta 계산 검증
+- [x] 모터 컨트롤러의 영구 절대좌표 `0x94 = 0°`로 ID 1–8 개별 Homing
 - [x] 한 버스에서 i10(`3600°` 주기) + i36(`12960°` 주기) 혼합 감속비 적용
-- [x] raw encoder 명령에 응답하지 않는 i36 펌웨어를 위한 `0x90` optional 처리
+- [x] raw encoder 명령에 응답하지 않는 펌웨어를 위한 `0x90` optional 처리
 - [x] ROS2 `MoveJoint` Action 목표각 이동
 - [x] persistent `arm_cli` 저지연 명령
 - [x] 이동 완료 → 다음 명령 순차 제어
@@ -50,7 +61,7 @@ LC529 USB-RS485 (/dev/ttyUSB0, 115200 baud)
 motor_control_pkg/config/zero_config_i10_verified.json
 ```
 
-현재 벤치는 MG4010E-i10 ID 1–2와 MG5010E-i36 ID 3–4 구성입니다. 감속비와 논리 주기는 calibration 파일에서 모터별로 관리합니다. 파일명은 과거 이름을 유지하지만 현재 내용은 검증된 혼합 4모터 구성입니다.
+현재 파일에는 MG4010E-i10 ID 1, 2, 5, 6과 MG5010E-i36 ID 3, 4, 7, 8의 검증값이 모두 들어 있습니다. 감속비와 논리 주기는 calibration 파일에서 모터별로 관리합니다. 파일명은 과거 이름을 유지하지만 현재 내용은 8모터 전체 구성을 포함합니다.
 
 ### 8축 pose/teach framework — mock 검증 완료
 
@@ -186,6 +197,8 @@ loop_period_deg
 ```
 
 `zero_single_deg`가 ROS 좌표 기준을 정의합니다. 현재 검증 파일은 모터 컨트롤러의 영구 내부 절대좌표인 `0x94 = 0°`를 그대로 사용합니다. `zero_encoder`와 `zero_raw`는 선택적인 진단값이므로 `null`일 수 있으며, homing 계산에는 `zero_single_deg`와 `loop_period_deg`를 사용합니다.
+
+내부 절대좌표 `0x94 = 0°`를 기준으로 사용할 때는 현재 읽힌 `0x94` 값을 `zero_single_deg`에 복사하거나 `/set_zero`를 호출하지 않습니다. `/set_zero`는 현재 물리 위치를 새로운 ROS 소프트웨어 영점으로 저장할 때만 사용하는 별도 calibration 기능입니다.
 
 ### 2. 로봇 pose
 
@@ -499,15 +512,27 @@ Mock mode에서는 pose 검색, Action 완료, 실행 순서와 오류 처리를
 ros2 run motor_control_pkg scan_ids --port /dev/ttyUSB0
 ```
 
-### 5. 이동 없이 Homing 계산만 확인
+### 5. 모터 정보와 encoder frame 읽기
 
 ```bash
-ros2 run motor_control_pkg check_home --id 4 --port /dev/ttyUSB0
+ros2 run motor_control_pkg probe_motors --port /dev/ttyUSB0 --ids 5 6 7 8
+```
+
+`probe_motors`는 모터별 `0x12` 정보, `0x94` 절대각, `0x90` raw encoder, `0x92` 다회전각을 출력합니다. `motor_on`, `motor_off`, `0xA4` 이동 명령을 보내지 않으며 JSON도 수정하지 않습니다. 다른 serial 프로그램과 동시에 실행하지 마세요.
+
+일부 펌웨어는 `0x90`에 응답하지 않으므로 `encoder (0x90): FAIL`만 표시될 수 있습니다. `0x94`와 `0x92`가 정상이라면 내부 절대영점 계산과 Homing에는 문제가 없습니다.
+
+### 6. 이동 없이 Homing 계산만 확인
+
+```bash
+ros2 run motor_control_pkg check_home \
+  --config ~/iroi_ws/src/motor_control_pkg/config/zero_config_i10_verified.json \
+  --id 8
 ```
 
 `check_home`은 예상 Homing target만 계산하고 이동 명령은 보내지 않습니다.
 
-### 6. 현재 4모터 실물 노드 실행
+### 7. 현재 4모터 실물 노드 실행
 
 ```bash
 ros2 run motor_control_pkg motor_control_node
@@ -515,7 +540,7 @@ ros2 run motor_control_pkg motor_control_node
 
 현재 기본값은 실제 모드로 `/dev/ttyUSB0`을 열고, ID 1–4의 검증된 i10/i36 혼합 calibration을 읽어 영구 절대좌표 `0x94 = 0°`로 실제 Homing합니다. 명령 실행 직후 모터가 움직일 수 있습니다.
 
-### 7. Persistent 직접 제어 CLI
+### 8. Persistent 직접 제어 CLI
 
 ```bash
 ros2 run motor_control_pkg arm_cli
@@ -534,7 +559,7 @@ arm> 5 0 0 0 10
 arm> 0 0 0 0 10
 ```
 
-### 8. Teach, pose 저장, sequence 실행
+### 9. Teach, pose 저장, sequence 실행
 
 `motor_control_node`를 계속 실행한 상태에서 다른 터미널을 엽니다.
 
@@ -582,6 +607,7 @@ iroi_ws/src/
 │   │   ├── arm_startup_pose.py
 │   │   ├── arm_cli.py
 │   │   ├── scan_ids.py
+│   │   ├── probe_motors.py
 │   │   └── check_home.py
 │   ├── package.xml
 │   ├── setup.cfg
@@ -596,6 +622,7 @@ iroi_ws/src/
 ```text
 motor_control_node
 scan_ids
+probe_motors
 check_home
 arm_cli
 arm_pose_cli
@@ -649,6 +676,8 @@ motor_control_pkg/config/poses.json
 - [x] 한 RS485 bus에서 다중 모터 검증
 - [x] 한 RS485 bus에서 i10/i36 혼합 4모터 절대영점 Homing
 - [x] 4축 calibration 및 CLI 구성
+- [x] 최종 ID 1–8 모델, 감속비 및 encoder frame 확인
+- [x] ID 1–8 컨트롤러 내부 `0x94 = 0°` 기준 개별 Homing
 - [x] 8축 pose database framework
 - [x] mock pose 저장/list/show/playback
 - [x] mock Teach mode 이동 차단
@@ -657,7 +686,7 @@ motor_control_pkg/config/poses.json
 - [x] 순차 pose 실행 mock 검증 (`sequence 0 1 0`)
 - [ ] 순차 pose 실행 실물 하드웨어 검증
 - [ ] 최종 모터 ID ↔ 실제 joint 매핑
-- [ ] 최종 8모터별 절대 encoder zero calibration
+- [ ] 최종 기구 조립 자세에 대한 joint zero 매핑
 - [x] MG5010E-i36 homing용 ratio / wrap 실물 검증
 - [x] mixed i10/i36 homing 실물 검증
 - [ ] 4축 직접 CLI 이동 실물 검증
