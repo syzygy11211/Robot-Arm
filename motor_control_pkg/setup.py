@@ -34,6 +34,7 @@ setup(
             'arm_cli = motor_control_pkg.arm_cli:main',
             'arm_pose_cli = motor_control_pkg.arm_pose_cli:main',
             'arm_startup_pose = motor_control_pkg.arm_startup_pose:main',
+            'probe_motors = motor_control_pkg.probe_motors:main',
         ],
     },
 )
