@@ -53,9 +53,6 @@ One `motor_control_node` owns one arm and one RS485 bus. Higher-level CLIs never
 
 ### Detailed Wiring Diagram — To Be Added
 
-The power supply and pin-level wiring are not finalized. The real wiring diagram will be added after the power, RS485, protection, and connector arrangements are organized. Do not use a generic example diagram as the construction reference before confirmation.
-
-When both LC529 adapters are connected, `/dev/ttyUSB0` and `/dev/ttyUSB1` assignments can change with reboot or connection order. A persistent device-naming rule based on USB serial information should be defined before final operation.
 
 ## Quick Start
 
