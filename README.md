@@ -50,7 +50,6 @@ One `motor_control_node` owns one arm and one RS485 bus. Higher-level CLIs never
 | i10 motor | 4 | MG4010E-i10, IDs 1·2·5·6, ratio 10.0 | Individually checked |
 | i36 motor | 4 | MG5010E-i36, IDs 3·4·7·8, ratio 36.0 | Individually checked |
 | Motor power | Unconfirmed | Measured motor voltage approximately 24 V | Confirm model, rating, quantity, and distribution |
-| Pose storage | 1 | Runtime user path `~/.ros/arm_poses.json` | In use |
 
 ### Detailed Wiring Diagram — To Be Added
 
