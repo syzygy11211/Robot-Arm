@@ -1,6 +1,6 @@
 [English](./README.md) | **한국어**
 
-# iROI 8축 양팔 로봇 ROS2 제어
+# 8축 양팔 로봇 ROS2 제어
 
 LK-TECH RS485 모터 8개로 구성된 iROI 양팔 로봇의 ROS2 Humble 제어 패키지입니다. 모터 절대각 기준 복원, 현재 위치 HOLD, 절대 관절각 이동, Teach, Pose 저장·재생, Sequence 실행을 제공합니다.
 
