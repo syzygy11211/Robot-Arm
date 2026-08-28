@@ -207,6 +207,11 @@ arm> pose 0 10
 
 `null`이 포함된 Pose를 재생할 때 활성 모터의 `null`은 그 순간의 현재각으로 바뀌어 움직이지 않습니다. 연결되지 않은 반대편 팔은 한 팔 모드의 대상 자체가 아니므로 무시됩니다.
 
+한 팔 모드: active 사용 가능
+양팔 모드: right, left, all 사용
+teach-save 0 attention: 대상 입력 없이 현재 CLI에서 활성화된 팔을 저장
+pose, sequence: 실행한 CLI의 mode에 따라 오른팔·왼팔·양팔 결정
+
 ## 좌표와 영점
 
 현재 시스템에서 `zero_single_deg`에 저장한 절대 엔코더 기준을 로봇 관절의 논리 0°로 사용합니다. 주요 모터 명령 frame은 다음과 같습니다.
