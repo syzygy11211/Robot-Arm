@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
-"""Persistent pose/teach CLI for the iROI 8-motor arm system.
+"""Persistent pose/teach CLI for the iROI 8-motor dual-arm system.
 
-This tool intentionally lives beside the already hardware-verified ``arm_cli``.
-The old CLI remains available for direct ID 1/2/4 bench commands; this CLI adds
-pose storage, pose playback, teach mode, and an 8-motor status view.
+Motor topology is fixed as follows:
+  right_arm: IDs 1, 2, 3, 4
+  left_arm:  IDs 5, 6, 7, 8
 
-ROS parameters:
-  mode:       "test" (IDs 1,2,4 on /test_arm) or "dual" (IDs 1..8)
-  pose_path:  runtime pose DB, default ~/.ros/arm_poses.json
-  max_speed_dps: CLI speed ceiling (output-axis deg/s)
+``mode`` selects which installed arm endpoints are active: right, left, or dual.
+Pose records always keep IDs 1..8; motors outside the active mode remain null.
 """
 
 from __future__ import annotations
@@ -39,30 +37,31 @@ class ArmSpec:
     motor_ids: tuple[int, ...]
 
 
-TEST_SPECS = (
-    ArmSpec("test", "", (1, 2, 3, 4)),
-)
-
-DUAL_SPECS = (
-    ArmSpec("left", "/left_arm", (1, 2, 3, 4)),
-    ArmSpec("right", "/right_arm", (5, 6, 7, 8)),
-)
+RIGHT_SPEC = ArmSpec("right", "/right_arm", (1, 2, 3, 4))
+LEFT_SPEC = ArmSpec("left", "/left_arm", (5, 6, 7, 8))
+MODE_SPECS = {
+    "right": (RIGHT_SPEC,),
+    "left": (LEFT_SPEC,),
+    "dual": (RIGHT_SPEC, LEFT_SPEC),
+}
 
 
 class ArmPoseCLI(Node):
     def __init__(self):
         super().__init__("arm_pose_cli")
 
-        self.declare_parameter("mode", "test")
+        self.declare_parameter("mode", "right")
         self.declare_parameter("pose_path", "~/.ros/arm_poses.json")
         self.declare_parameter("max_speed_dps", 60.0)
         self.declare_parameter("default_pose_speed_dps", 20.0)
+        self.declare_parameter("state_freshness_sec", 2.0)
+        self.declare_parameter("teach_save_timeout_sec", 5.0)
 
         self.mode = str(self.get_parameter("mode").value).strip().lower()
-        if self.mode not in {"test", "dual"}:
-            raise ValueError("mode는 'test' 또는 'dual'이어야 합니다.")
+        if self.mode not in MODE_SPECS:
+            raise ValueError("mode는 right/left/dual 중 하나여야 합니다.")
 
-        self.specs = TEST_SPECS if self.mode == "test" else DUAL_SPECS
+        self.specs = MODE_SPECS[self.mode]
         self.pose_path = os.path.abspath(
             os.path.expanduser(str(self.get_parameter("pose_path").value))
         )
@@ -70,6 +69,16 @@ class ArmPoseCLI(Node):
         self.default_pose_speed_dps = float(
             self.get_parameter("default_pose_speed_dps").value
         )
+        self.state_freshness_sec = float(
+            self.get_parameter("state_freshness_sec").value
+        )
+        self.teach_save_timeout_sec = float(
+            self.get_parameter("teach_save_timeout_sec").value
+        )
+        if self.state_freshness_sec <= 0.0:
+            raise ValueError("state_freshness_sec는 0보다 커야 합니다.")
+        if self.teach_save_timeout_sec <= 0.0:
+            raise ValueError("teach_save_timeout_sec는 0보다 커야 합니다.")
 
         self.pose_manager = PoseManager(self.pose_path)
 
@@ -155,9 +164,8 @@ class ArmPoseCLI(Node):
             return list(self.specs)
 
         aliases = {spec.key: spec for spec in self.specs}
-        if self.mode == "test":
-            aliases["left"] = self.specs[0]
-            aliases["test"] = self.specs[0]
+        if len(self.specs) == 1:
+            aliases["active"] = self.specs[0]
 
         if target not in aliases:
             valid = ", ".join(sorted(set(aliases) | {"all"}))
@@ -171,15 +179,56 @@ class ArmPoseCLI(Node):
                 for mid in ALL_MOTOR_IDS
             }
 
-    def _require_current_for(self, motor_ids: Iterable[int]) -> Dict[int, float]:
+    def _require_current_for(self, spec: ArmSpec) -> Dict[int, float]:
         with self._angles_lock:
-            missing = [mid for mid in motor_ids if mid not in self.current_angles]
+            missing = [mid for mid in spec.motor_ids if mid not in self.current_angles]
             if missing:
                 raise RuntimeError(
                     f"현재 각도를 아직 받지 못한 motor: {missing}. "
                     "joint_states 수신 후 다시 실행하세요."
                 )
-            return {mid: self.current_angles[mid] for mid in motor_ids}
+            state_time = self.last_state_time.get(spec.key)
+            age = None if state_time is None else time.time() - state_time
+            if age is None or age > self.state_freshness_sec:
+                age_text = "없음" if age is None else f"{age:.2f}초"
+                raise RuntimeError(
+                    f"[{spec.key}] joint_states가 오래되었습니다(age={age_text}). "
+                    "실행 중인 motor_control_node 연결을 확인하세요."
+                )
+            return {mid: self.current_angles[mid] for mid in spec.motor_ids}
+
+    def _active_snapshot_angles(self) -> Dict[int, Optional[float]]:
+        """활성 팔은 최신 실측값, 비활성 팔은 null인 8축 snapshot을 만든다."""
+        snapshot: Dict[int, Optional[float]] = {
+            mid: None for mid in ALL_MOTOR_IDS
+        }
+        for spec in self.specs:
+            snapshot.update(self._require_current_for(spec))
+        return snapshot
+
+    def _wait_for_fresh_states(
+        self,
+        specs: Iterable[ArmSpec],
+        after: Dict[str, float],
+    ) -> None:
+        """HOLD 전환 이후 각 활성 팔에서 새 joint_states가 올 때까지 기다린다."""
+        specs = list(specs)
+        deadline = time.time() + self.teach_save_timeout_sec
+        while rclpy.ok() and time.time() < deadline:
+            with self._angles_lock:
+                ready = all(
+                    self.last_state_time.get(spec.key, 0.0)
+                    > after.get(spec.key, 0.0)
+                    and all(mid in self.current_angles for mid in spec.motor_ids)
+                    for spec in specs
+                )
+            if ready:
+                return
+            time.sleep(0.02)
+        raise TimeoutError(
+            "teach OFF/HOLD 이후 새로운 joint_states를 받지 못했습니다. "
+            "Pose는 저장하지 않았습니다."
+        )
 
     def _validate_speed(self, speed: float) -> float:
         speed = float(speed)
@@ -221,11 +270,12 @@ class ArmPoseCLI(Node):
         pose = self.pose_manager.get_pose(pose_id)
         pose_angles = pose["angles"]
 
-        goal_handles = []
+        # 모든 활성 팔의 최신 상태와 target을 먼저 검증한다. 이 단계에서는
+        # Action을 전송하지 않아, 두 팔 중 하나의 입력 오류로 부분 이동하지 않는다.
+        plans = []
         skipped = []
-
         for spec in self.specs:
-            current = self._require_current_for(spec.motor_ids)
+            current = self._require_current_for(spec)
             targets: Dict[int, float] = {}
             has_real_target = False
 
@@ -244,11 +294,17 @@ class ArmPoseCLI(Node):
             if not has_real_target:
                 continue
 
-            goal_handles.append((spec, self._send_arm_goal(spec, targets, speed)))
+            plans.append((spec, targets))
 
-        if not goal_handles:
+        if not plans:
             print(f"[arm] pose {pose_id}: 이동할 값이 없습니다. (모두 null)")
             return
+
+        # 입력과 현재 상태를 전부 검증한 뒤에만 Action을 전송한다.
+        goal_handles = [
+            (spec, self._send_arm_goal(spec, targets, speed))
+            for spec, targets in plans
+        ]
 
         print(
             f"[arm] pose {pose_id} '{pose['name']}' 이동 시작, "
@@ -292,7 +348,7 @@ class ArmPoseCLI(Node):
         print("[arm] sequence 완료")
 
     def save_pose(self, pose_id: int, name: Optional[str]) -> None:
-        snapshot = self._snapshot_angles()
+        snapshot = self._active_snapshot_angles()
         saved = self.pose_manager.save_pose(pose_id, snapshot, name=name)
         print(f"[arm] pose {pose_id} '{saved['name']}' 저장 완료")
         for mid in ALL_MOTOR_IDS:
@@ -301,6 +357,21 @@ class ArmPoseCLI(Node):
                 print(f"      ID {mid}: NULL")
             else:
                 print(f"      ID {mid}: {value:+.3f}°")
+
+    def teach_save_pose(self, pose_id: int, name: Optional[str]) -> None:
+        """활성 팔을 Teach OFF/HOLD한 뒤 새 실측 상태를 Pose로 저장한다."""
+        specs = list(self.specs)
+        print("[arm] teach-save: 활성 팔 Teach OFF + 현재 위치 HOLD 요청")
+        self.set_teach("all", enabled=False)
+        # Service 성공 응답보다 뒤에 발행된 상태만 저장해야 HOLD 이전 값이
+        # 섞이지 않는다.
+        with self._angles_lock:
+            after_hold = {
+                spec.key: self.last_state_time.get(spec.key, 0.0)
+                for spec in specs
+            }
+        self._wait_for_fresh_states(specs, after=after_hold)
+        self.save_pose(pose_id, name)
 
     def _call_set_bool(self, client, value: bool, label: str) -> None:
         req = SetBool.Request()
@@ -375,7 +446,8 @@ class ArmPoseCLI(Node):
         print("Commands:")
         print("  pose <ID> [speed]       저장 pose로 이동")
         print("  sequence <ID...>        여러 pose를 입력 순서대로 실행")
-        print("  save <ID> [name]        현재 8축 값을 저장; 미수신 ID는 NULL")
+        print("  save <ID> [name]        활성 팔 최신값 저장; 비활성 ID는 NULL")
+        print("  teach-save <ID> [name]  Teach OFF/HOLD 후 새 상태를 저장")
         print("  list                    pose 목록")
         print("  show <ID>               pose 상세")
         print("  delete <ID>             pose 삭제 (pose 0 삭제 불가)")
@@ -386,12 +458,14 @@ class ArmPoseCLI(Node):
         print("  help")
         print("  q | quit | exit")
         print()
-        print("target: test/left/right/all (mode에 따라 사용 가능)")
+        print("mode: right(ID 1-4), left(ID 5-8), dual(ID 1-8)")
+        print("target: right/left/active/all (mode에 따라 사용 가능)")
         print("예: pose 0 20")
         print("    sequence 0 1 2 3 2 1 0")
         print("    save 1 wave")
-        print("    teach left on")
-        print("    teach left off")
+        print("    teach-save 0 attention")
+        print("    teach active on")
+        print("    teach active off")
         print()
 
     def run_cli(self) -> None:
@@ -432,6 +506,11 @@ class ArmPoseCLI(Node):
                     pose_id = int(parts[1])
                     name = " ".join(parts[2:]) if len(parts) > 2 else None
                     self.save_pose(pose_id, name)
+
+                elif cmd == "teach-save" and len(parts) >= 2:
+                    pose_id = int(parts[1])
+                    name = " ".join(parts[2:]) if len(parts) > 2 else None
+                    self.teach_save_pose(pose_id, name)
 
                 elif cmd == "pose" and len(parts) in {2, 3}:
                     pose_id = int(parts[1])

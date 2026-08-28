@@ -4,13 +4,13 @@
 핵심 좌표계
 -----------
 * 0x94 / read_single_angle(): 전원 재인가 후에도 유지되는 절대 엔코더 기준값.
-  저장된 ``zero_single_deg`` 와 비교해서 부팅 시 물리적 영점으로 복귀하는 데 사용한다.
+  저장된 ``zero_single_deg`` 와 비교해서 현재 0x92 좌표의 기준을 복원하는 데 사용한다.
 * 0x92 / read_multi_angle(): 현재 전원 세션의 다회전 좌표계.
   Homing이 끝난 뒤 계산한 ``zero_92`` 를 기준으로 위치 추적과 모든 이동 명령을 처리한다.
 * 0xA4 / move_to_frame_angle(): 0x92와 같은 좌표계의 목표를 받는다.
 
-따라서 real mode에서는 시작 시 자동 homing을 수행한 뒤,
-    output_angle = (current_92 - zero_92) / ratio
+따라서 real mode에서는 기본적으로 시작 위치를 유지한 채 reference를 복원한 뒤,
+    output_angle = direction * (current_92 - zero_92) / ratio
 로 출력축 각도를 계산한다.
 
 이 구조는 기존 Python 실물 테스트의 ``MotorRuntime.start_homing()`` / ``current_output_angle()`` /
@@ -66,14 +66,18 @@ class MotorControlNode(Node):
 
         # pose-framework: reference_only startup
         # ''=legacy auto_home, home=physical zero move, reference_only=no-motion sync, disabled=none
-        self.declare_parameter('startup_mode', 'home')
+        self.declare_parameter('startup_mode', 'reference_only')
         self.declare_parameter('teach_hold_speed_dps', 10.0)
 
         # Homing 속도는 출력축 기준 deg/s. 실제 0xA4에는 ratio를 곱한 모터축 속도로 보낸다.
         self.declare_parameter('homing_speed_dps', 30.0)
         self.declare_parameter('homing_timeout_sec', 20.0)
-        self.declare_parameter('homing_settle_deg', 0.05)
-        self.declare_parameter('homing_settle_count', 6)
+        self.declare_parameter('homing_target_tolerance_deg', 0.2)
+        self.declare_parameter('homing_settle_count', 3)
+
+        # MoveJoint 완료 판정: 모든 이동 대상 모터가 이 오차 안에 연속 N회 들어와야 성공.
+        self.declare_parameter('move_target_tolerance_deg', 0.2)
+        self.declare_parameter('move_settle_count', 3)
 
         # config 항목에 값이 없을 때의 fallback.
         # 현재 i10 실물 테스트에서는 ratio=10, loop_period=3600이 검증값이다.
@@ -99,10 +103,25 @@ class MotorControlNode(Node):
         self.teach_hold_speed_dps = float(self.get_parameter('teach_hold_speed_dps').value)
         self.homing_speed_dps = float(self.get_parameter('homing_speed_dps').value)
         self.homing_timeout_sec = float(self.get_parameter('homing_timeout_sec').value)
-        self.homing_settle_deg = float(self.get_parameter('homing_settle_deg').value)
+        self.homing_target_tolerance_deg = float(
+            self.get_parameter('homing_target_tolerance_deg').value
+        )
         self.homing_settle_count = int(self.get_parameter('homing_settle_count').value)
+        self.move_target_tolerance_deg = float(
+            self.get_parameter('move_target_tolerance_deg').value
+        )
+        self.move_settle_count = int(self.get_parameter('move_settle_count').value)
         self.default_ratio = float(self.get_parameter('default_ratio').value)
         self.default_loop_period_deg = float(self.get_parameter('loop_period_deg').value)
+
+        if self.homing_target_tolerance_deg <= 0.0:
+            raise ValueError('homing_target_tolerance_deg는 0보다 커야 합니다.')
+        if self.homing_settle_count < 1:
+            raise ValueError('homing_settle_count는 1 이상이어야 합니다.')
+        if self.move_target_tolerance_deg <= 0.0:
+            raise ValueError('move_target_tolerance_deg는 0보다 커야 합니다.')
+        if self.move_settle_count < 1:
+            raise ValueError('move_settle_count는 1 이상이어야 합니다.')
 
         if len(self.joint_names) != len(self.motor_ids):
             raise ValueError(
@@ -140,7 +159,7 @@ class MotorControlNode(Node):
         self.homed = False
 
         # pose-framework runtime gates
-        self.torque_enabled = True
+        self.torque_enabled = False
         self.teach_mode = False
 
         # 읽기 실패 시 마지막 정상 위치를 잠깐 유지하기 위한 cache (출력축 deg).
@@ -150,10 +169,20 @@ class MotorControlNode(Node):
         self.mock_angles = {mid: 0.0 for mid in self.motor_ids}
 
         if self.mock_mode:
-            self.homed = True
-            for mid in self.motor_ids:
-                self.zero_92[mid] = 0.0
-            self.get_logger().info(f'[{self.arm_name}] mock_mode=True, 실제 serial 포트를 열지 않습니다.')
+            if self.startup_mode == 'disabled':
+                self.homed = False
+                self.torque_enabled = False
+                self.get_logger().warn(
+                    f'[{self.arm_name}] mock startup_mode=disabled: 이동 명령을 거부합니다.'
+                )
+            else:
+                self.homed = True
+                self.torque_enabled = True
+                for mid in self.motor_ids:
+                    self.zero_92[mid] = 0.0
+                self.get_logger().info(
+                    f'[{self.arm_name}] mock_mode=True, 실제 serial 포트를 열지 않습니다.'
+                )
         else:
             self._open_real_bus_and_motors()
             if self.startup_mode == 'home':
@@ -161,8 +190,10 @@ class MotorControlNode(Node):
             elif self.startup_mode == 'reference_only':
                 self._sync_zero_reference()
             else:
+                self._torque_off_all_real_motors()
                 self.get_logger().warn(
-                    f'[{self.arm_name}] startup_mode=disabled: 좌표 reference가 아직 없습니다. '
+                    f'[{self.arm_name}] startup_mode=disabled: 전체 torque OFF, '
+                    f'좌표 reference가 아직 없습니다. '
                     f'/sync_reference 또는 /home 실행 전에는 이동 명령을 거부합니다.'
                 )
         # ------------------------------------------------------------------
@@ -210,6 +241,7 @@ class MotorControlNode(Node):
               "name": "motor1",
               "motor_id": 4,
               "ratio": 10.0,
+              "direction": 1,
               "max_speed_dps": 60.0,
               "zero_single_deg": 3599.98,
               "loop_period_deg": 3600.0
@@ -230,6 +262,7 @@ class MotorControlNode(Node):
                         'name': f'motor{mid}',
                         'motor_id': mid,
                         'ratio': self.default_ratio,
+                        'direction': 1,
                         'max_speed_dps': self.default_max_speed_dps,
                         'zero_single_deg': 0.0,
                         'loop_period_deg': self.default_loop_period_deg,
@@ -263,6 +296,13 @@ class MotorControlNode(Node):
             entry['motor_id'] = mid
             entry['name'] = entry.get('name', f'motor{mid}')
             entry['ratio'] = float(entry.get('ratio', self.default_ratio))
+            direction = float(entry.get('direction', 1))
+            if direction not in {-1.0, 1.0}:
+                raise RuntimeError(
+                    f'motor_id={mid} direction은 -1 또는 +1이어야 합니다: '
+                    f'{entry.get("direction")!r}'
+                )
+            entry['direction'] = int(direction)
             entry['max_speed_dps'] = float(entry.get('max_speed_dps', self.default_max_speed_dps))
             entry['loop_period_deg'] = float(
                 entry.get('loop_period_deg', self.default_loop_period_deg)
@@ -277,6 +317,7 @@ class MotorControlNode(Node):
                         'name': f'motor{mid}',
                         'motor_id': mid,
                         'ratio': self.default_ratio,
+                        'direction': 1,
                         'max_speed_dps': self.default_max_speed_dps,
                         'zero_single_deg': 0.0,
                         'loop_period_deg': self.default_loop_period_deg,
@@ -302,6 +343,7 @@ class MotorControlNode(Node):
             f'[{self.arm_name}] motor config 로드 완료: '
             + ', '.join(
                 f"ID {mid}: ratio={selected[mid]['ratio']}, "
+                f"direction={selected[mid]['direction']:+d}, "
                 f"zero94={selected[mid].get('zero_single_deg')}, "
                 f"period={selected[mid]['loop_period_deg']}"
                 for mid in self.motor_ids
@@ -360,6 +402,24 @@ class MotorControlNode(Node):
         half = period / 2.0
         return (target - current + half) % period - half
 
+    def _motor_delta_to_output(self, mid, motor_delta):
+        """모터축 각도차를 방향이 적용된 출력축 각도차로 변환한다."""
+        cfg = self.motor_cfg[mid]
+        return (
+            float(cfg['direction'])
+            * float(motor_delta)
+            / float(cfg['ratio'])
+        )
+
+    def _output_delta_to_motor(self, mid, output_delta):
+        """출력축 각도차를 direction/ratio가 적용된 모터축 각도차로 변환한다."""
+        cfg = self.motor_cfg[mid]
+        return (
+            float(cfg['direction'])
+            * float(output_delta)
+            * float(cfg['ratio'])
+        )
+
     def _open_real_bus_and_motors(self):
         import serial
         from motor_control_pkg.lk_motor import LKMotor
@@ -370,13 +430,13 @@ class MotorControlNode(Node):
             self.get_logger().error(f'[{self.arm_name}] 시리얼 포트 열기 실패: {e}')
             raise
 
-        # 기존 검증 코드와 동일하게 시작 시 각 모터 handshake -> motor_on을 수행한다.
+        # 여기서는 통신과 모델만 확인한다. motor_on은 반드시 현재 위치 목표와 함께
+        # HOLD 또는 Homing 경로에서 수행해, 목표 없는 torque ON 구간을 만들지 않는다.
         for mid in self.motor_ids:
             motor = LKMotor(self.ser, motor_id=mid)
             try:
                 with self.serial_lock:
                     motor.handshake()
-                    motor.motor_on()
                     info = motor.read_info()
             except Exception as e:
                 raise RuntimeError(f'motor {mid} 초기화 실패: {e}') from e
@@ -394,6 +454,78 @@ class MotorControlNode(Node):
                 f'[{self.arm_name}] motor {mid} 연결: {reported_model} (SN {info.get("sn", "")})'
             )
 
+    def _torque_off_all_real_motors(self):
+        """모든 실물 모터의 torque를 best-effort로 해제한다."""
+        if self.mock_mode:
+            self.torque_enabled = False
+            return
+
+        for mid, motor in self.motors.items():
+            try:
+                with self.serial_lock:
+                    motor.motor_off()
+            except Exception as e:
+                self.get_logger().warn(f'[{self.arm_name}] motor {mid} torque OFF 실패: {e}')
+
+        self.torque_enabled = False
+
+    def _hold_current_positions(self, reason):
+        """현재 0x92 위치를 목표로 지정해 torque ON과 HOLD를 원자적으로 수행한다.
+
+        모든 모터의 현재 위치를 먼저 읽은 뒤 각 모터에 motor_on -> 0xA4 current
+        target을 보낸다. 하나라도 실패하면 전체 torque OFF를 시도하고 실패를 전파한다.
+        """
+        if self.mock_mode:
+            self.torque_enabled = True
+            self.teach_mode = False
+            self.get_logger().info(f'[{self.arm_name}] mock 현재 위치 HOLD 완료: {reason}')
+            return dict(self.mock_angles)
+
+        with self.motion_lock:
+            current_92 = {}
+            try:
+                for mid, motor in self.motors.items():
+                    with self.serial_lock:
+                        current_92[mid] = motor.read_multi_angle()
+
+                for mid, motor in self.motors.items():
+                    ratio = float(self.motor_cfg[mid]['ratio'])
+                    cfg_limit = float(
+                        self.motor_cfg[mid].get('max_speed_dps', self.default_max_speed_dps)
+                    )
+                    hold_speed_out = min(
+                        max(self.teach_hold_speed_dps, 0.1),
+                        cfg_limit,
+                        self.default_max_speed_dps,
+                    )
+                    with self.serial_lock:
+                        motor.motor_on()
+                        motor.move_to_frame_angle(current_92[mid], hold_speed_out * ratio)
+            except Exception as e:
+                self._stop_all_real_motors()
+                self._torque_off_all_real_motors()
+                self.teach_mode = True
+                raise RuntimeError(f'현재 위치 HOLD 실패 ({reason}): {e}') from e
+
+            self.torque_enabled = True
+            self.teach_mode = False
+
+            held_output = {}
+            for mid, cur_92 in current_92.items():
+                zero_92 = self.zero_92.get(mid)
+                if zero_92 is None:
+                    held_output[mid] = None
+                else:
+                    held_output[mid] = self._motor_delta_to_output(
+                        mid, cur_92 - zero_92
+                    )
+
+            self.get_logger().info(
+                f'[{self.arm_name}] 현재 위치 HOLD 완료 ({reason}): '
+                f'output_deg={held_output}'
+            )
+            return current_92
+
     def _sync_zero_reference(self):
         """Map saved 0x94 encoder zeros into the current 0x92 frame without motion."""
         if self.mock_mode:
@@ -410,7 +542,6 @@ class MotorControlNode(Node):
                 cfg = self.motor_cfg[mid]
                 zero_single = float(cfg['zero_single_deg'])
                 period = float(cfg['loop_period_deg'])
-                ratio = float(cfg['ratio'])
                 with self.serial_lock:
                     current_single = motor.read_single_angle()
                     current_92 = motor.read_multi_angle()
@@ -420,17 +551,25 @@ class MotorControlNode(Node):
                 self.get_logger().info(
                     f'[{self.arm_name}] [ID {mid}] reference sync: '
                     f'0x94={current_single:.2f}, saved_zero={zero_single:.2f}, '
-                    f'delta={delta:+.2f} motor-deg ({delta / ratio:+.3f} output-deg), '
+                    f'delta={delta:+.2f} motor-deg '
+                    f'({self._motor_delta_to_output(mid, delta):+.3f} output-deg), '
                     f'zero_92={zero_92:.2f}'
                 )
             self.zero_92.update(mapped)
             self.homed = True
-            positions, failed = self._read_all_output_angles()
-            if failed:
+            try:
+                self._hold_current_positions('reference_only sync 직후')
+                positions, failed = self._read_all_output_angles()
+                if failed:
+                    raise RuntimeError(
+                        f'reference sync 직후 위치 확인 실패: motor {sorted(failed)}'
+                    )
+            except Exception:
                 self.homed = False
-                raise RuntimeError(f'reference sync 직후 위치 확인 실패: motor {sorted(failed)}')
+                raise
             self.get_logger().info(
-                f'[{self.arm_name}] reference sync 완료 - 물리 이동 없음. 현재 출력축 위치={positions}'
+                f'[{self.arm_name}] reference sync + 현재 위치 HOLD 완료. '
+                f'현재 출력축 위치={positions}'
             )
 
     def _home_all_motors(self):
@@ -441,11 +580,13 @@ class MotorControlNode(Node):
             zero_92 = current_92 + delta
             move_to_frame_angle(zero_92, homing_speed_output * ratio)
 
-        모든 이동 명령을 먼저 순서대로 보내고, 그 뒤 0x94를 라운드로빈 폴링해
-        각 모터가 정지할 때까지 기다린다.
+        모든 이동 명령을 먼저 순서대로 보내고, 그 뒤 0x92를 라운드로빈 폴링해
+        각 모터가 목표 오차 안에 연속 N회 들어왔는지 확인한다.
         """
         if self.mock_mode:
             self.homed = True
+            self.torque_enabled = True
+            self.teach_mode = False
             for mid in self.motor_ids:
                 self.zero_92[mid] = 0.0
                 self.mock_angles[mid] = 0.0
@@ -457,39 +598,69 @@ class MotorControlNode(Node):
                 f'[{self.arm_name}] 자동 Homing 시작 - 모터가 저장된 물리 영점으로 이동합니다.'
             )
 
-            # 1) 각 모터에 homing 이동 명령을 빠르게 순서대로 전송.
-            for mid in self.motor_ids:
-                motor = self.motors[mid]
-                cfg = self.motor_cfg[mid]
-                zero_single = float(cfg['zero_single_deg'])
-                period = float(cfg['loop_period_deg'])
-                ratio = float(cfg['ratio'])
+            plans = {}
+            try:
+                # 1) 모든 목표를 먼저 계산한다. 하나라도 읽기 실패하면 움직이지 않는다.
+                for mid in self.motor_ids:
+                    motor = self.motors[mid]
+                    cfg = self.motor_cfg[mid]
+                    zero_single = float(cfg['zero_single_deg'])
+                    period = float(cfg['loop_period_deg'])
+                    ratio = float(cfg['ratio'])
+                    cfg_limit = float(
+                        cfg.get('max_speed_dps', self.default_max_speed_dps)
+                    )
+                    speed_output = min(
+                        max(self.homing_speed_dps, 0.1),
+                        cfg_limit,
+                        self.default_max_speed_dps,
+                    )
 
-                with self.serial_lock:
-                    current_single = motor.read_single_angle()
-                    current_92 = motor.read_multi_angle()
+                    with self.serial_lock:
+                        current_single = motor.read_single_angle()
+                        current_92 = motor.read_multi_angle()
 
-                delta = self._shortest_delta(zero_single, current_single, period)
-                target_zero_92 = current_92 + delta
-                speed_motor = self.homing_speed_dps * ratio
+                    delta = self._shortest_delta(zero_single, current_single, period)
+                    target_zero_92 = current_92 + delta
+                    plans[mid] = {
+                        'target_92': target_zero_92,
+                        'speed_motor': speed_output * ratio,
+                    }
 
-                self.zero_92[mid] = target_zero_92
+                    self.get_logger().warn(
+                        f'[{self.arm_name}] [ID {mid}] Homing: '
+                        f'0x94 {current_single:.2f} -> {zero_single:.2f} deg, '
+                        f'delta={delta:+.2f} motor-deg '
+                        f'({self._motor_delta_to_output(mid, delta):+.3f} output-deg), '
+                        f'speed={speed_output:.2f} output-deg/s'
+                    )
 
-                self.get_logger().warn(
-                    f'[{self.arm_name}] [ID {mid}] Homing: '
-                    f'0x94 {current_single:.2f} -> {zero_single:.2f} deg, '
-                    f'delta={delta:+.2f} motor-deg '
-                    f'({delta / ratio:+.3f} output-deg)'
-                )
+                # 목표 없는 torque ON 구간을 최소화하기 위해 전부 ON한 직후 명령한다.
+                for mid in self.motor_ids:
+                    with self.serial_lock:
+                        self.motors[mid].motor_on()
 
-                with self.serial_lock:
-                    motor.move_to_frame_angle(target_zero_92, speed_motor)
+                self.torque_enabled = True
+                self.teach_mode = False
 
-            # 2) 기존 wait_all_settled() 방식으로 모든 모터의 정지를 함께 확인.
+                for mid in self.motor_ids:
+                    plan = plans[mid]
+                    with self.serial_lock:
+                        self.motors[mid].move_to_frame_angle(
+                            plan['target_92'], plan['speed_motor']
+                        )
+                    self.zero_92[mid] = plan['target_92']
+            except Exception as e:
+                self._stop_all_real_motors()
+                self.homed = False
+                self.torque_enabled = False
+                raise RuntimeError(f'Homing 명령 준비/전송 실패: {e}') from e
+
+            # 2) 목표 오차가 허용범위 안에 연속 N회 들어오는지 확인.
             deadline = time.time() + self.homing_timeout_sec
-            prev = {mid: None for mid in self.motor_ids}
             stable = {mid: 0 for mid in self.motor_ids}
             done = {mid: False for mid in self.motor_ids}
+            last_errors = {mid: None for mid in self.motor_ids}
 
             while time.time() < deadline and not all(done.values()):
                 for mid in self.motor_ids:
@@ -498,31 +669,43 @@ class MotorControlNode(Node):
 
                     try:
                         with self.serial_lock:
-                            angle = self.motors[mid].read_single_angle()
+                            current_92 = self.motors[mid].read_multi_angle()
                     except Exception as e:
                         self._stop_all_real_motors()
-                        raise RuntimeError(f'Homing 중 motor {mid} 0x94 읽기 실패: {e}') from e
+                        self.homed = False
+                        raise RuntimeError(f'Homing 중 motor {mid} 0x92 읽기 실패: {e}') from e
 
-                    if prev[mid] is not None:
-                        # 원본 wait_all_settled()의 비교식 그대로 유지.
-                        diff = abs((angle - prev[mid] + 180.0) % 360.0 - 180.0)
-                        if diff < self.homing_settle_deg:
-                            stable[mid] += 1
-                        else:
-                            stable[mid] = 0
+                    plan = plans[mid]
+                    error_output = self._motor_delta_to_output(
+                        mid, plan['target_92'] - current_92
+                    )
+                    last_errors[mid] = error_output
+                    if abs(error_output) <= self.homing_target_tolerance_deg:
+                        stable[mid] += 1
+                    else:
+                        stable[mid] = 0
 
-                        if stable[mid] >= self.homing_settle_count:
-                            done[mid] = True
-                            self.get_logger().info(f'[{self.arm_name}] [ID {mid}] Homing 정지 확인 완료')
-
-                    prev[mid] = angle
+                    if stable[mid] >= self.homing_settle_count:
+                        done[mid] = True
+                        self.get_logger().info(
+                            f'[{self.arm_name}] [ID {mid}] Homing 목표 도착 확인: '
+                            f'error={error_output:+.3f} output-deg, '
+                            f'{self.homing_settle_count}회 연속 만족'
+                        )
 
                 time.sleep(0.05)
 
             not_done = [mid for mid in self.motor_ids if not done[mid]]
             if not_done:
                 self._stop_all_real_motors()
-                raise RuntimeError(f'Homing 타임아웃: motor {not_done}')
+                self.homed = False
+                remaining_errors = {
+                    mid: last_errors[mid] for mid in not_done
+                }
+                raise RuntimeError(
+                    f'Homing 타임아웃: motor {not_done}, '
+                    f'last_errors(output_deg)={remaining_errors}'
+                )
 
             # 3) Homing 후에는 0x92-zero_92를 유일한 위치 기준으로 사용한다.
             self.homed = True
@@ -539,7 +722,7 @@ class MotorControlNode(Node):
         """모든 모터의 현재 출력축 각도[deg]를 읽는다.
 
         real mode에서는 반드시 0x92 기준으로 계산한다:
-            (read_multi_angle() - zero_92) / ratio
+            direction * (read_multi_angle() - zero_92) / ratio
         """
         if self.mock_mode:
             return dict(self.mock_angles), set()
@@ -553,8 +736,9 @@ class MotorControlNode(Node):
             try:
                 with self.serial_lock:
                     cur_92 = self.motors[mid].read_multi_angle()
-                ratio = float(self.motor_cfg[mid]['ratio'])
-                angle_out = (cur_92 - self.zero_92[mid]) / ratio
+                angle_out = self._motor_delta_to_output(
+                    mid, cur_92 - self.zero_92[mid]
+                )
                 angles[mid] = angle_out
                 self._last_good_output_angle[mid] = angle_out
             except Exception as e:
@@ -613,13 +797,18 @@ class MotorControlNode(Node):
             return response
         try:
             with self.motion_lock:
-                for mid, motor in self.motors.items():
-                    with self.serial_lock:
-                        motor.motor_on() if turn_on else motor.motor_off()
-                self.torque_enabled = turn_on
+                if turn_on:
+                    self._hold_current_positions('/torque true')
+                    response.message = (
+                        f'torque ON + current-position HOLD '
+                        f'({len(self.motors)}개 모터)'
+                    )
+                else:
+                    self._stop_all_real_motors()
+                    self._torque_off_all_real_motors()
+                    response.message = f'torque OFF ({len(self.motors)}개 모터)'
                 self.teach_mode = False
             response.success = True
-            response.message = f'torque {"on" if turn_on else "off"} 완료 ({len(self.motors)}개 모터)'
             self.get_logger().info(f'[{self.arm_name}] {response.message}')
         except Exception as e:
             response.success = False
@@ -641,41 +830,20 @@ class MotorControlNode(Node):
             with self.motion_lock:
                 if enable_teach:
                     self._stop_all_real_motors()
-                    for mid, motor in self.motors.items():
-                        with self.serial_lock:
-                            motor.motor_off()
+                    self._torque_off_all_real_motors()
                     self.teach_mode = True
-                    self.torque_enabled = False
                     response.message = (
                         f'teach ON: torque OFF ({len(self.motors)}개 모터). '
                         '팔을 반드시 지지한 상태에서 직접 움직이세요.'
                     )
                 else:
-                    current_92 = {}
-                    for mid, motor in self.motors.items():
-                        with self.serial_lock:
-                            current_92[mid] = motor.read_multi_angle()
-                    for mid, motor in self.motors.items():
-                        ratio = float(self.motor_cfg[mid]['ratio'])
-                        cfg_limit = float(self.motor_cfg[mid].get('max_speed_dps', self.default_max_speed_dps))
-                        hold_speed_out = min(max(self.teach_hold_speed_dps, 0.1), cfg_limit, self.default_max_speed_dps)
-                        with self.serial_lock:
-                            motor.motor_on()
-                            motor.move_to_frame_angle(current_92[mid], hold_speed_out * ratio)
-                    self.teach_mode = False
-                    self.torque_enabled = True
+                    self._hold_current_positions('teach OFF')
                     response.message = f'teach OFF: torque ON + current-position HOLD ({len(self.motors)}개 모터)'
             response.success = True
             self.get_logger().warn(f'[{self.arm_name}] {response.message}')
         except Exception as e:
             if not self.mock_mode:
-                for mid, motor in self.motors.items():
-                    try:
-                        with self.serial_lock:
-                            motor.motor_off()
-                    except Exception:
-                        pass
-            self.torque_enabled = False
+                self._torque_off_all_real_motors()
             self.teach_mode = True
             response.success = False
             response.message = f'teach 전환 실패: {e}; 안전 fallback으로 전체 torque OFF 시도'
@@ -686,7 +854,10 @@ class MotorControlNode(Node):
         try:
             self._sync_zero_reference()
             response.success = True
-            response.message = f'reference sync 완료 - 물리 이동 없음 (motor_ids={self.motor_ids})'
+            response.message = (
+                f'reference sync + current-position HOLD 완료 '
+                f'(motor_ids={self.motor_ids})'
+            )
         except Exception as e:
             response.success = False
             response.message = f'reference sync 실패: {e}'
@@ -696,8 +867,8 @@ class MotorControlNode(Node):
     def home_callback(self, request, response):
         """저장된 절대 엔코더 영점으로 다시 자동 homing한다."""
         try:
-            if self.teach_mode or not self.torque_enabled:
-                raise RuntimeError('teach/torque OFF 상태에서는 home을 실행할 수 없습니다.')
+            if self.teach_mode:
+                raise RuntimeError('teach mode에서는 home을 실행할 수 없습니다.')
             self._home_all_motors()
             response.success = True
             response.message = f'home 완료 (motor_ids={self.motor_ids})'
@@ -737,7 +908,7 @@ class MotorControlNode(Node):
                         # 모터 모델 확인
                         info = self.motors[mid].read_info()
 
-                        # homing 기준으로 실제 사용하는 절대각
+                        #homing 기준으로 실제 사용하는 절대각
                         zero_single = self.motors[mid].read_single_angle()
 
                         # 0x90 encoder read는 일부 모터/펌웨어에서 응답하지 않을 수 있으므로 optional로 처리한다.
@@ -745,8 +916,8 @@ class MotorControlNode(Node):
                             enc = self.motors[mid].read_encoder()
                         except Exception as e:
                             self.get_logger().warn(
-                                f'ID {mid}: 0x90 encoder read 실패. '
-                                f'zero_encoder/zero_raw는 null로 저장합니다: {e}'
+                               f'ID {mid}: 0x90 encoder read 실패. '
+                               f'zero_encoder/zero_raw는 null로 저장합니다: {e}'
                             )
                             enc = {
                                 'encoder': None,
@@ -766,8 +937,7 @@ class MotorControlNode(Node):
                         and reported_model not in expected_model
                     ):
                         raise RuntimeError(
-                            f'ID {mid}: 모델 불일치: '
-                            f'config={expected_model}, actual={reported_model}'
+                            f'ID {mid}: 모델 불일치: config={expected_model}, actual={reported_model}'
                         )
 
                     new_values[mid] = (
@@ -776,7 +946,7 @@ class MotorControlNode(Node):
                         cur_92,
                     )
 
-                # 모든 모터의 필수값(0x94, 0x92) 읽기가 성공한 뒤에만 저장
+                #모든 모터의 필수값(0x94, 0x92) 읽기가 성공한 뒤에만 저장
                 for mid, (zero_single, enc, cur_92) in new_values.items():
                     self.motor_cfg[mid]['zero_single_deg'] = zero_single
                     self.motor_cfg[mid]['zero_encoder'] = enc.get('encoder')
@@ -816,7 +986,7 @@ class MotorControlNode(Node):
         """MoveJoint: 출력축 기준 목표각[deg]으로 여러 모터를 동기 이동한다.
 
         Homing 이후에는 0x94를 위치 추적/목표 계산에 사용하지 않는다.
-        target_92 = zero_92 + target_output_deg * ratio
+        target_92 = zero_92 + direction * target_output_deg * ratio
         speed_motor = speed_output_dps * ratio
         로 0xA4에 직접 보낸다.
         """
@@ -905,7 +1075,9 @@ class MotorControlNode(Node):
                         continue
 
                     ratio = float(self.motor_cfg[mid]['ratio'])
-                    target_92 = self.zero_92[mid] + targets[mid] * ratio
+                    target_92 = self.zero_92[mid] + self._output_delta_to_motor(
+                        mid, targets[mid]
+                    )
                     speed_motor = synced_speeds[mid] * ratio
 
                     try:
@@ -922,7 +1094,6 @@ class MotorControlNode(Node):
 
             feedback = MoveJoint.Feedback()
             deadline = time.time() + max(duration_t + 3.0, 8.0)
-            settle_deg_output = 0.2
             stable_count = 0
 
             while True:
@@ -966,7 +1137,10 @@ class MotorControlNode(Node):
                     return result
 
                 errors = {mid: targets[mid] - current[mid] for mid in self.motor_ids}
-                all_settled = all(abs(errors[mid]) < settle_deg_output for mid in self.motor_ids)
+                all_settled = all(
+                    abs(errors[mid]) <= self.move_target_tolerance_deg
+                    for mid in moving
+                )
 
                 feedback.current_angles = [current[mid] for mid in self.motor_ids]
                 feedback.errors = [errors[mid] for mid in self.motor_ids]
@@ -974,7 +1148,7 @@ class MotorControlNode(Node):
                 goal_handle.publish_feedback(feedback)
 
                 stable_count = stable_count + 1 if all_settled else 0
-                if stable_count >= 3:
+                if stable_count >= self.move_settle_count:
                     result.success = True
                     result.timeout = False
                     result.error_message = ''
@@ -1021,7 +1195,8 @@ def main(args=None):
         if node is not None:
             node.shutdown_safely()
             node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
