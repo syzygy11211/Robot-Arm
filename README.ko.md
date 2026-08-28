@@ -168,7 +168,7 @@ arm> q
 
 ## Pose 지정·저장·실행: `arm_pose_cli`
 
-Pose는 repository의 예제 파일이 아니라 Raspberry Pi 실행 사용자 기준 `~/.ros/arm_poses.json`에 저장됩니다. 먼저 모터 launch를 실행해 둔 뒤 새 터미널에서 CLI를 엽니다.
+Pose는 repository의 예제 파일이 아니라 Raspberry Pi 실행 사용자 기준 `~/.ros/arm_poses.json`에 저장됩니다. 이렇게 분리한 이유는 `colcon build`마다 새로 생성되는 install 산출물에 저장된 Pose가 덮어써지는 것을 막고, `save`/`teach-save`할 때마다 추적 중인 소스 트리에 불필요한 git diff가 생기는 것도 피하기 위해서입니다. 먼저 모터 launch를 실행해 둔 뒤 새 터미널에서 CLI를 엽니다.
 
 ```bash
 ros2 run motor_control_pkg arm_pose_cli --ros-args -p mode:=right

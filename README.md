@@ -168,7 +168,7 @@ Targets are **absolute output/joint angles** relative to the saved zero, not rel
 
 ## Teaching, Saving, and Running Poses: `arm_pose_cli`
 
-Runtime poses are stored in `~/.ros/arm_poses.json` for the Raspberry Pi user, not in the repository's example `config/poses.json`. Keep the motor launch running and start one CLI:
+Runtime poses are stored in `~/.ros/arm_poses.json` for the Raspberry Pi user, not in the repository's example `config/poses.json`. This keeps saved poses out of the `colcon` install output, which is regenerated on every rebuild, and out of the tracked source tree, which would otherwise get a git diff on every `save`/`teach-save`. Keep the motor launch running and start one CLI:
 
 ```bash
 ros2 run motor_control_pkg arm_pose_cli --ros-args -p mode:=right
