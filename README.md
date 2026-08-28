@@ -1,6 +1,6 @@
 **English** | [한국어](./README.ko.md)
 
-# iROI 8-Axis Dual-Arm ROS2 Control
+# 8-Axis Dual-Arm ROS2 Control
 
 This repository provides the ROS2 Humble control stack for the iROI dual-arm robot, built from eight LK-TECH RS485 motors. It supports absolute-reference recovery, current-position HOLD, absolute joint-angle motion, Teach mode, persistent poses, and pose sequences.
 
