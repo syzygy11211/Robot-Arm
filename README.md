@@ -42,7 +42,6 @@ One `motor_control_node` owns one arm and one RS485 bus. Higher-level CLIs never
 
 ## Hardware Configuration
 
-Only details confirmed by the code and staged hardware checks are listed here.
 
 | Component | Quantity | Confirmed detail | Status |
 |---|---:|---|---|
