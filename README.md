@@ -334,7 +334,7 @@ An `0x90 FAIL (timeout)` from `probe_motors` can be an expected optional-command
 | Verification | Read-only diagnostic CLIs, mock checks, staged real-motor checks |
 | Version control | Git, GitHub |
 
-## Problems Solved Directly in This Project
+## Problems Solved in This Project
 
 - Per-motor ratios and absolute-angle periods for mixed i10/i36 buses
 - Conversion from persistent `0x94` and multi-turn `0x92` frames into logical output-axis coordinates, including reference recovery after power-up
