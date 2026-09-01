@@ -1,6 +1,6 @@
 [English](./README.md) | **한국어**
 
-# iROI 8축 양팔 로봇 ROS2 제어
+# 8축 양팔 로봇 ROS2 제어
 
 LK-TECH RS485 모터 8개로 구성된 iROI 양팔 로봇의 ROS2 Humble 제어 패키지입니다. 모터 절대각 기준 복원, 현재 위치 HOLD, 절대 관절각 이동, Teach, Pose 저장·재생, Sequence 실행을 제공합니다.
 
@@ -42,7 +42,6 @@ LK-TECH RS485 모터 8개로 구성된 iROI 양팔 로봇의 ROS2 Humble 제어 
 
 ## 하드웨어 구성표
 
-현재 코드와 실물 확인을 통해 확정된 항목만 기록했습니다.
 
 | 구분 | 수량 | 확정된 내용 | 상태 |
 |---|---:|---|---|
@@ -51,13 +50,9 @@ LK-TECH RS485 모터 8개로 구성된 iROI 양팔 로봇의 ROS2 Humble 제어 
 | i10 모터 | 4 | MG4010E-i10, ID 1·2·5·6, ratio 10.0 | 개별 확인 완료 |
 | i36 모터 | 4 | MG5010E-i36, ID 3·4·7·8, ratio 36.0 | 개별 확인 완료 |
 | 모터 전원 | 미확정 | 실측 모터 전압 약 24 V | 모델·정격·수량·분배 방식 확인 필요 |
-| Pose 저장소 | 1 | 실행 사용자 `~/.ros/arm_poses.json` | 사용 중 |
 
 ### 상세 배선도 — 추후 추가
 
-전원공급장치와 핀 단위 배선은 아직 확정되지 않았습니다. 전원·RS485·보호회로·커넥터 구성이 정리된 뒤 실제 연결을 기준으로 추가합니다. 확정 전에는 예시 배선을 제작 기준으로 사용하지 않습니다.
-
-두 LC529를 동시에 연결했을 때 `/dev/ttyUSB0`과 `/dev/ttyUSB1`의 할당 순서는 재부팅이나 연결 순서에 따라 바뀔 수 있습니다. 최종 운용 전에는 USB serial 정보 기반의 고정 장치 이름 규칙을 정하는 것이 안전합니다.
 
 ## 빠른 시작
 
@@ -173,7 +168,7 @@ arm> q
 
 ## Pose 지정·저장·실행: `arm_pose_cli`
 
-Pose는 repository의 예제 파일이 아니라 Raspberry Pi 실행 사용자 기준 `~/.ros/arm_poses.json`에 저장됩니다. 먼저 모터 launch를 실행해 둔 뒤 새 터미널에서 CLI를 엽니다.
+Pose는 repository의 예제 파일이 아니라 Raspberry Pi 실행 사용자 기준 `~/.ros/arm_poses.json`에 저장됩니다. 이렇게 분리한 이유는 `colcon build`마다 새로 생성되는 install 산출물에 저장된 Pose가 덮어써지는 것을 막고, `save`/`teach-save`할 때마다 추적 중인 소스 트리에 불필요한 git diff가 생기는 것도 피하기 위해서입니다. 먼저 모터 launch를 실행해 둔 뒤 새 터미널에서 CLI를 엽니다.
 
 ```bash
 ros2 run motor_control_pkg arm_pose_cli --ros-args -p mode:=right
@@ -211,6 +206,8 @@ arm> pose 0 10
 `teach-save`는 단순 파일 저장이 아닙니다. 먼저 Teach OFF를 요청하고, 모터가 현재 위치에 HOLD된 뒤 새로 발행된 `joint_states`를 기다려 그 값을 저장합니다. 한 팔 모드로 저장하면 활성 팔 4개는 숫자, 반대편 ID 4개는 `null`로 기록됩니다. 양팔 모드라면 8개를 모두 저장합니다.
 
 `null`이 포함된 Pose를 재생할 때 활성 모터의 `null`은 그 순간의 현재각으로 바뀌어 움직이지 않습니다. 연결되지 않은 반대편 팔은 한 팔 모드의 대상 자체가 아니므로 무시됩니다.
+
+
 
 ## 좌표와 영점
 
@@ -336,7 +333,7 @@ ros2 run motor_control_pkg check_home \
 | 검증 | read-only 진단 CLI, mock 검증, 단계별 실물 모터 검증 |
 | 형상 관리 | Git, GitHub |
 
-## 본 프로젝트에서 직접 해결한 문제
+## 본 프로젝트에서 해결한 문제
 
 - i10/i36 혼합 감속비와 서로 다른 절대각 주기를 모터별 config로 처리
 - `0x94` 절대각과 `0x92` 다회전각을 출력축 좌표로 변환하고 전원 재인가 후 기준 복원

@@ -1,6 +1,6 @@
 **English** | [한국어](./README.ko.md)
 
-# iROI 8-Axis Dual-Arm ROS2 Control
+# 8-Axis Dual-Arm ROS2 Control
 
 This repository provides the ROS2 Humble control stack for the iROI dual-arm robot, built from eight LK-TECH RS485 motors. It supports absolute-reference recovery, current-position HOLD, absolute joint-angle motion, Teach mode, persistent poses, and pose sequences.
 
@@ -42,7 +42,6 @@ One `motor_control_node` owns one arm and one RS485 bus. Higher-level CLIs never
 
 ## Hardware Configuration
 
-Only details confirmed by the code and staged hardware checks are listed here.
 
 | Component | Quantity | Confirmed detail | Status |
 |---|---:|---|---|
@@ -51,13 +50,9 @@ Only details confirmed by the code and staged hardware checks are listed here.
 | i10 motor | 4 | MG4010E-i10, IDs 1·2·5·6, ratio 10.0 | Individually checked |
 | i36 motor | 4 | MG5010E-i36, IDs 3·4·7·8, ratio 36.0 | Individually checked |
 | Motor power | Unconfirmed | Measured motor voltage approximately 24 V | Confirm model, rating, quantity, and distribution |
-| Pose storage | 1 | Runtime user path `~/.ros/arm_poses.json` | In use |
 
 ### Detailed Wiring Diagram — To Be Added
 
-The power supply and pin-level wiring are not finalized. The real wiring diagram will be added after the power, RS485, protection, and connector arrangements are organized. Do not use a generic example diagram as the construction reference before confirmation.
-
-When both LC529 adapters are connected, `/dev/ttyUSB0` and `/dev/ttyUSB1` assignments can change with reboot or connection order. A persistent device-naming rule based on USB serial information should be defined before final operation.
 
 ## Quick Start
 
@@ -173,7 +168,7 @@ Targets are **absolute output/joint angles** relative to the saved zero, not rel
 
 ## Teaching, Saving, and Running Poses: `arm_pose_cli`
 
-Runtime poses are stored in `~/.ros/arm_poses.json` for the Raspberry Pi user, not in the repository's example `config/poses.json`. Keep the motor launch running and start one CLI:
+Runtime poses are stored in `~/.ros/arm_poses.json` for the Raspberry Pi user, not in the repository's example `config/poses.json`. This keeps saved poses out of the `colcon` install output, which is regenerated on every rebuild, and out of the tracked source tree, which would otherwise get a git diff on every `save`/`teach-save`. Keep the motor launch running and start one CLI:
 
 ```bash
 ros2 run motor_control_pkg arm_pose_cli --ros-args -p mode:=right
@@ -336,7 +331,7 @@ An `0x90 FAIL (timeout)` from `probe_motors` can be an expected optional-command
 | Verification | Read-only diagnostic CLIs, mock checks, staged real-motor checks |
 | Version control | Git, GitHub |
 
-## Problems Solved Directly in This Project
+## Problems Solved in This Project
 
 - Per-motor ratios and absolute-angle periods for mixed i10/i36 buses
 - Conversion from persistent `0x94` and multi-turn `0x92` frames into logical output-axis coordinates, including reference recovery after power-up
