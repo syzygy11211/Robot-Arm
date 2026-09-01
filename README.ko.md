@@ -4,7 +4,7 @@
 
 LK-TECH RS485 모터 8개로 구성된 iROI 양팔 로봇의 ROS2 Humble 제어 패키지입니다. 모터 절대각 기준 복원, 현재 위치 HOLD, 절대 관절각 이동, Teach, Pose 저장·재생, Sequence 실행을 제공합니다.
 
-> 개발 상태: ID 1–8의 통신·모델·각도·개별 영점 확인과 4축 Action 이동을 단계적으로 검증했습니다. 두 RS485 버스에 8개 모터를 동시에 연결한 최종 양팔 검증, 회전 방향 최종 보정, 관절 제한 설정은 남아 있습니다.
+> 개발 상태: ID 1–8의 통신·모델·각도·개별 영점 확인과 4축 Action 이동을 단계적으로 검증했습니다. 두 RS485 버스에 8개 모터를 동시에 연결한 최종 양팔 검증과 관절 제한 설정은 남아 있습니다.
 
 ## 프로젝트 한눈에 보기
 
@@ -20,10 +20,10 @@ LK-TECH RS485 모터 8개로 구성된 iROI 양팔 로봇의 ROS2 Humble 제어 
 ## 반드시 먼저 읽기
 
 - 실물 테스트 중에는 로봇팔을 사람이 지지하고 비상 전원 차단 수단을 준비하세요.
-- 최초 실물 검증 또는 배선·조립·영점·방향 설정 변경 후에는 `start_pose:=false`로 시작하세요. 이 경우 시작 위치를 좌표 기준으로만 복원하고 그 자리에서 HOLD합니다. 검증이 완료된 정상 운용에서는 `start_pose:=true`로 Pose 0 자동 실행을 사용할 수 있습니다.
+- 최초 실물 검증 또는 배선·조립·영점 설정 변경 후에는 `start_pose:=false`로 시작하세요. 이 경우 시작 위치를 좌표 기준으로만 복원하고 그 자리에서 HOLD합니다. 검증이 완료된 정상 운용에서는 `start_pose:=true`로 Pose 0 자동 실행을 사용할 수 있습니다.
 - Teach ON은 토크를 끕니다. 중력으로 팔이 떨어질 수 있으므로 팔을 잡은 상태에서 실행하세요.
 - 한 RS485 포트는 한 프로그램만 사용해야 합니다. `motor_control_node` 실행 중 같은 포트로 `scan_ids`, `probe_motors`, `check_home`을 실행하지 마세요.
-- 현재 관절 최소·최대 제한은 아직 설정하지 않았습니다. 작은 각도와 낮은 속도로 먼저 방향과 구조 간섭을 확인하세요.
+- 현재 관절 최소·최대 제한은 아직 설정하지 않았습니다. 작은 각도와 낮은 속도로 실제 움직임과 구조 간섭을 먼저 확인하세요.
 
 ## 최종 모터 구성
 
@@ -113,7 +113,7 @@ ros2 action info /right_arm/move_to
 
 ### 4. Pose 0까지 자동 실행
 
-안전 실행과 방향 확인, Pose 0 확인이 끝난 뒤에만 사용하세요.
+안전 실행과 실제 움직임 확인, Pose 0 확인이 끝난 뒤에만 사용하세요.
 
 ```bash
 ros2 launch motor_control_pkg single_arm_reference.launch.py \
@@ -223,16 +223,13 @@ arm> pose 0 10
 | `0xA4` | `0x92` frame 기준 절대 위치 이동 |
 
 ```text
-output_angle = direction × (current_0x92 - zero_0x92) / ratio
-target_0x92  = zero_0x92 + direction × target_output_angle × ratio
+output_angle = (current_0x92 - zero_0x92) / ratio
+target_0x92  = zero_0x92 + target_output_angle × ratio
 ```
 
 - `ratio`: i10은 10.0, i36은 36.0
-- `direction`: 논리 관절 양(+) 방향과 모터 회전 방향의 부호. 생략 시 `+1`
 - `zero_encoder`, `zero_raw`: 진단용 선택 값. 펌웨어가 `0x90`에 응답하지 않으면 `null`이어도 됩니다.
 - `loop_period_deg`: i10은 3600°, i36은 12960°
-
-실물 조립 기준 `direction` 부호는 아직 최종 보정 전입니다. 작은 목표로 각 관절의 양(+) 방향을 확인한 뒤 config에 `1.0` 또는 `-1.0`을 지정해야 합니다.
 
 ## HOLD와 Teach 안전 동작
 
@@ -318,7 +315,7 @@ ros2 run motor_control_pkg check_home \
 1. 팔을 지지하고 한 팔만 `start_pose:=false`로 시작합니다.
 2. 4개 연결, reference sync, 현재 위치 HOLD 로그와 `joint_states`를 확인합니다.
 3. `arm_cli`에서 한 관절만 ±1~2° 목표를 주고 나머지는 `null`로 둡니다.
-4. 실제 회전 방향과 구조 간섭을 확인해 `direction`을 확정합니다.
+4. 실제 움직임과 구조 간섭을 확인합니다.
 5. Action이 0.2° 이내 3회 연속 확인 후 완료되는지 봅니다.
 6. `arm_pose_cli`의 Teach로 안전한 Pose 0을 저장하고 5~10°/s로 재생합니다.
 7. 한 팔 검증을 양쪽에 반복한 뒤 두 포트로 `dual_arm_reference.launch.py`를 시험합니다.
@@ -354,7 +351,6 @@ ros2 run motor_control_pkg check_home \
 ## 남은 작업
 
 - [ ] 두 LC529와 ID 1–8 동시 통신 검증
-- [ ] 관절별 `direction` 실물 보정
 - [ ] 관절별 최소·최대 각도 제한
 - [ ] 양팔 Teach/Pose 0/Sequence 실물 검증
 - [ ] 비상 정지와 통신 장애 recovery 절차 확정
@@ -367,4 +363,4 @@ ros2 run motor_control_pkg check_home \
 - 포트를 열 수 없으면: 같은 포트를 쓰는 다른 node/diagnostic process를 종료합니다.
 - config가 없으면: launch의 `zero_config:=...` 경로와 install 후 파일을 확인합니다.
 - Pose가 움직이지 않으면: `show <ID>`로 활성 팔 값이 모두 `null`인지 확인합니다.
-- 방향이 반대면: 더 움직이지 말고 config의 해당 ID `direction`을 확인합니다.
+- 예상과 다른 움직임이 있으면: 더 움직이지 말고 현재 절대 목표각과 실제 관절 움직임을 다시 확인합니다.

@@ -10,7 +10,7 @@
 * 0xA4 / move_to_frame_angle(): 0x92와 같은 좌표계의 목표를 받는다.
 
 따라서 real mode에서는 기본적으로 시작 위치를 유지한 채 reference를 복원한 뒤,
-    output_angle = direction * (current_92 - zero_92) / ratio
+    output_angle = (current_92 - zero_92) / ratio
 로 출력축 각도를 계산한다.
 
 이 구조는 기존 Python 실물 테스트의 ``MotorRuntime.start_homing()`` / ``current_output_angle()`` /
@@ -241,7 +241,6 @@ class MotorControlNode(Node):
               "name": "motor1",
               "motor_id": 4,
               "ratio": 10.0,
-              "direction": 1,
               "max_speed_dps": 60.0,
               "zero_single_deg": 3599.98,
               "loop_period_deg": 3600.0
@@ -262,7 +261,6 @@ class MotorControlNode(Node):
                         'name': f'motor{mid}',
                         'motor_id': mid,
                         'ratio': self.default_ratio,
-                        'direction': 1,
                         'max_speed_dps': self.default_max_speed_dps,
                         'zero_single_deg': 0.0,
                         'loop_period_deg': self.default_loop_period_deg,
@@ -296,13 +294,6 @@ class MotorControlNode(Node):
             entry['motor_id'] = mid
             entry['name'] = entry.get('name', f'motor{mid}')
             entry['ratio'] = float(entry.get('ratio', self.default_ratio))
-            direction = float(entry.get('direction', 1))
-            if direction not in {-1.0, 1.0}:
-                raise RuntimeError(
-                    f'motor_id={mid} direction은 -1 또는 +1이어야 합니다: '
-                    f'{entry.get("direction")!r}'
-                )
-            entry['direction'] = int(direction)
             entry['max_speed_dps'] = float(entry.get('max_speed_dps', self.default_max_speed_dps))
             entry['loop_period_deg'] = float(
                 entry.get('loop_period_deg', self.default_loop_period_deg)
@@ -317,7 +308,6 @@ class MotorControlNode(Node):
                         'name': f'motor{mid}',
                         'motor_id': mid,
                         'ratio': self.default_ratio,
-                        'direction': 1,
                         'max_speed_dps': self.default_max_speed_dps,
                         'zero_single_deg': 0.0,
                         'loop_period_deg': self.default_loop_period_deg,
@@ -343,7 +333,6 @@ class MotorControlNode(Node):
             f'[{self.arm_name}] motor config 로드 완료: '
             + ', '.join(
                 f"ID {mid}: ratio={selected[mid]['ratio']}, "
-                f"direction={selected[mid]['direction']:+d}, "
                 f"zero94={selected[mid].get('zero_single_deg')}, "
                 f"period={selected[mid]['loop_period_deg']}"
                 for mid in self.motor_ids
@@ -403,22 +392,14 @@ class MotorControlNode(Node):
         return (target - current + half) % period - half
 
     def _motor_delta_to_output(self, mid, motor_delta):
-        """모터축 각도차를 방향이 적용된 출력축 각도차로 변환한다."""
+        """모터축 각도차를 감속비로 출력축 각도차로 변환한다."""
         cfg = self.motor_cfg[mid]
-        return (
-            float(cfg['direction'])
-            * float(motor_delta)
-            / float(cfg['ratio'])
-        )
+        return float(motor_delta) / float(cfg['ratio'])
 
     def _output_delta_to_motor(self, mid, output_delta):
-        """출력축 각도차를 direction/ratio가 적용된 모터축 각도차로 변환한다."""
+        """출력축 각도차를 감속비로 모터축 각도차로 변환한다."""
         cfg = self.motor_cfg[mid]
-        return (
-            float(cfg['direction'])
-            * float(output_delta)
-            * float(cfg['ratio'])
-        )
+        return float(output_delta) * float(cfg['ratio'])
 
     def _open_real_bus_and_motors(self):
         import serial
@@ -722,7 +703,7 @@ class MotorControlNode(Node):
         """모든 모터의 현재 출력축 각도[deg]를 읽는다.
 
         real mode에서는 반드시 0x92 기준으로 계산한다:
-            direction * (read_multi_angle() - zero_92) / ratio
+            (read_multi_angle() - zero_92) / ratio
         """
         if self.mock_mode:
             return dict(self.mock_angles), set()
@@ -986,7 +967,7 @@ class MotorControlNode(Node):
         """MoveJoint: 출력축 기준 목표각[deg]으로 여러 모터를 동기 이동한다.
 
         Homing 이후에는 0x94를 위치 추적/목표 계산에 사용하지 않는다.
-        target_92 = zero_92 + direction * target_output_deg * ratio
+        target_92 = zero_92 + target_output_deg * ratio
         speed_motor = speed_output_dps * ratio
         로 0xA4에 직접 보낸다.
         """

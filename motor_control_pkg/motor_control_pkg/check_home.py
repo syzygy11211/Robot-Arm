@@ -45,13 +45,6 @@ def main():
         raise SystemExit(f'config에 motor_id={args.motor_id}가 없습니다: {config_path}')
 
     ratio = float(entry.get('ratio', 10.0))
-    direction = float(entry.get('direction', 1))
-    if direction not in {-1.0, 1.0}:
-        raise SystemExit(
-            f'motor_id={args.motor_id} direction은 -1 또는 +1이어야 합니다: '
-            f'{entry.get("direction")!r}'
-        )
-    direction = int(direction)
     period = float(entry.get('loop_period_deg', ratio * 360.0))
     zero_single = entry.get('zero_single_deg')
     if zero_single is None:
@@ -69,13 +62,12 @@ def main():
         ser.close()
 
     delta_motor = shortest_delta(zero_single, current_single, period)
-    delta_output = direction * delta_motor / ratio
+    delta_output = delta_motor / ratio
     target_92 = current_92 + delta_motor
 
     print(f"model          : {info['motor']} (ID {args.motor_id}, SN {info['sn']})")
     print(f"voltage        : {state['voltage_v']:.2f} V")
     print(f"error_state    : {state['error_state']}")
-    print(f"direction      : {direction:+d}")
     print(f"current 0x94   : {current_single:.2f} deg")
     print(f"saved zero 0x94: {zero_single:.2f} deg")
     print(f"current 0x92   : {current_92:.2f} deg")

@@ -4,7 +4,7 @@
 
 This repository provides the ROS2 Humble control stack for the iROI dual-arm robot, built from eight LK-TECH RS485 motors. It supports absolute-reference recovery, current-position HOLD, absolute joint-angle motion, Teach mode, persistent poses, and pose sequences.
 
-> Development status: communication, model/angle reads, and individual zero checks have been verified for IDs 1–8, with four-axis Action motion verified in stages. Final simultaneous eight-motor testing on two RS485 buses, physical direction calibration, and joint-limit configuration are still pending.
+> Development status: communication, model/angle reads, and individual zero checks have been verified for IDs 1–8, with four-axis Action motion verified in stages. Final simultaneous eight-motor testing on two RS485 buses and joint-limit configuration are still pending.
 
 ## Project at a Glance
 
@@ -20,10 +20,10 @@ This repository provides the ROS2 Humble control stack for the iROI dual-arm rob
 ## Read This First
 
 - Physically support the arm and keep an emergency power cut-off within reach during hardware tests.
-- Use `start_pose:=false` for the first hardware validation and after wiring, assembly, zero-reference, or direction changes. It restores the coordinate reference and HOLDs the current position. After validation, normal operation may use `start_pose:=true` to run Pose 0 automatically.
+- Use `start_pose:=false` for the first hardware validation and after wiring, assembly, or zero-reference changes. It restores the coordinate reference and HOLDs the current position. After validation, normal operation may use `start_pose:=true` to run Pose 0 automatically.
 - Teach ON disables torque. The arm can fall under gravity, so support it before enabling Teach.
 - Only one process may use an RS485 port. Do not run `scan_ids`, `probe_motors`, or `check_home` on a port while `motor_control_node` is using it.
-- Joint min/max limits are not configured yet. Verify direction and mechanical clearance with low speed and very small targets.
+- Joint min/max limits are not configured yet. Verify actual motion and mechanical clearance with low speed and very small targets.
 
 ## Final Motor Topology
 
@@ -113,7 +113,7 @@ Replace `right_arm` with `left_arm` for the left side. Control is ready when a f
 
 ### 4. Start and Automatically Run Pose 0
 
-Use this only after the safe startup, direction checks, and Pose 0 inspection are complete.
+Use this only after the safe startup, motion checks, and Pose 0 inspection are complete.
 
 ```bash
 ros2 launch motor_control_pkg single_arm_reference.launch.py \
@@ -223,16 +223,13 @@ The current configuration treats the saved absolute encoder reference in `zero_s
 | `0xA4` | Absolute position command in the `0x92` frame |
 
 ```text
-output_angle = direction × (current_0x92 - zero_0x92) / ratio
-target_0x92  = zero_0x92 + direction × target_output_angle × ratio
+output_angle = (current_0x92 - zero_0x92) / ratio
+target_0x92  = zero_0x92 + target_output_angle × ratio
 ```
 
 - `ratio`: 10.0 for i10; 36.0 for i36
-- `direction`: sign between logical positive joint motion and motor rotation; defaults to `+1`
 - `zero_encoder`, `zero_raw`: optional diagnostics; they may be `null` when firmware does not answer `0x90`
 - `loop_period_deg`: 3600° for i10; 12960° for i36
-
-Physical `direction` signs still require final calibration on the assembled robot. Test each joint with a very small target, then set the corresponding config value to `1.0` or `-1.0`.
 
 ## HOLD and Teach Safety Behavior
 
@@ -318,7 +315,7 @@ An `0x90 FAIL (timeout)` from `probe_motors` can be an expected optional-command
 1. Support the robot and start only one arm with `start_pose:=false`.
 2. Confirm four connections, reference synchronization, current HOLD logs, and fresh `joint_states`.
 3. In `arm_cli`, command only one joint by ±1–2° and use `null` for the other three.
-4. Confirm physical direction and clearance; finalize each `direction` sign.
+4. Confirm actual motion and clearance.
 5. Confirm Action completion occurs only after three consecutive samples within 0.2°.
 6. Save a safe Pose 0 with Teach, then replay it at 5–10°/s.
 7. Repeat on both sides, then test `dual_arm_reference.launch.py` with two ports.
@@ -354,7 +351,6 @@ An `0x90 FAIL (timeout)` from `probe_motors` can be an expected optional-command
 ## Remaining Work
 
 - [ ] Simultaneous communication test with two LC529 adapters and IDs 1–8
-- [ ] Physical `direction` calibration for every joint
 - [ ] Joint min/max angle limits
 - [ ] Real-hardware validation of dual Teach, Pose 0, and sequences
 - [ ] Emergency-stop and communication-recovery procedure
@@ -367,4 +363,4 @@ An `0x90 FAIL (timeout)` from `probe_motors` can be an expected optional-command
 - Cannot open serial port: stop any other node or diagnostic process using that port.
 - Missing config: verify the `zero_config:=...` argument and the installed config files.
 - Pose causes no motion: use `show <ID>` and check whether every active value is `null`.
-- Wrong direction: stop further motion and inspect that motor's `direction` config.
+- Unexpected motion: stop further motion and re-check the absolute target angle and physical joint movement.
