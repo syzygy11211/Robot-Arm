@@ -342,6 +342,8 @@ An `0x90 FAIL (timeout)` from `probe_motors` can be an expected optional-command
 - Fresh-state-only pose saving after Teach OFF/HOLD
 - Stable target detection using tolerance plus consecutive samples
 - Namespace and ID mapping that allow one code path to operate either one arm or both arms
+- Resolved Teach/Torque service timeouts caused by high-frequency RS485 polling by separating callback groups
+- Preserved the existing 'serial_lock' to prevent RS485 communication conflicts while improving service responsiveness
 
 ## Remaining Work
 
