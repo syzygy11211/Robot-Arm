@@ -344,6 +344,8 @@ ros2 run motor_control_pkg check_home \
 - Teach OFF/HOLD 이후 새 상태만 Pose에 저장해 오래된 측정값 방지
 - 목표점 오차와 연속 안정 횟수로 실제 도착을 판정
 - 한 팔·양팔을 동일한 코드로 운용하도록 namespace와 ID mapping을 분리
+- 높은 주기의 RS485 polling으로 Teach/Torque 서비스가 timeout되는 문제를 callback group 분리로 해결
+- 기존 'serial_lock'은 유지해 RS485 통신 충돌을 방지하면서 제어 서비스 응답성을 확보
 
 ## 남은 작업
 
