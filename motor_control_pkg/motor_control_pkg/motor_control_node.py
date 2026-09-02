@@ -25,7 +25,7 @@ import time
 
 import rclpy
 from rclpy.action import ActionServer, CancelResponse
-from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
@@ -201,8 +201,16 @@ class MotorControlNode(Node):
         # ------------------------------------------------------------------
         self.joint_state_pub = self.create_publisher(JointState, 'joint_states', 10)
 
+        # 위치 polling이 기본 callback group을 계속 점유하면 /teach, /torque 같은
+        # 제어 서비스가 실행 순서를 얻지 못해 timeout될 수 있다. polling만 별도
+        # 그룹으로 분리하고, 실제 RS485 접근은 기존 serial_lock으로 직렬화한다.
+        self._polling_callback_group = MutuallyExclusiveCallbackGroup()
         timer_period = 1.0 / max(self.polling_hz, 1.0)
-        self.timer = self.create_timer(timer_period, self.polling_callback)
+        self.timer = self.create_timer(
+            timer_period,
+            self.polling_callback,
+            callback_group=self._polling_callback_group,
+        )
 
         self.torque_srv = self.create_service(SetBool, 'torque', self.torque_callback)
 
