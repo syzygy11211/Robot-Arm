@@ -130,6 +130,15 @@ class ArmPoseCLI(Node):
         return callback
 
     @staticmethod
+    def _display_angle(value: float) -> float:
+        """연속 관절 좌표를 CLI용 0~360도 표기로 변환한다.
+
+        Pose JSON에는 연속 좌표를 그대로 보관해 상위 제어와 경로 선택에 필요한
+        정보를 잃지 않는다.
+        """
+        return float(value) % 360.0
+
+    @staticmethod
     def _wait_future(future, timeout_sec: float = 15.0):
         deadline = time.time() + timeout_sec
         while rclpy.ok() and not future.done():
@@ -160,12 +169,10 @@ class ArmPoseCLI(Node):
 
     def _selected_specs(self, target: str) -> list[ArmSpec]:
         target = target.lower()
-        if target == "all":
+        if target in {"all", "active"}:
             return list(self.specs)
 
         aliases = {spec.key: spec for spec in self.specs}
-        if len(self.specs) == 1:
-            aliases["active"] = self.specs[0]
 
         if target not in aliases:
             valid = ", ".join(sorted(set(aliases) | {"all"}))
@@ -356,7 +363,7 @@ class ArmPoseCLI(Node):
             if value is None:
                 print(f"      ID {mid}: NULL")
             else:
-                print(f"      ID {mid}: {value:+.3f}°")
+                print(f"      ID {mid}: {self._display_angle(value):.3f}°")
 
     def teach_save_pose(self, pose_id: int, name: Optional[str]) -> None:
         """활성 팔을 Teach OFF/HOLD한 뒤 새 실측 상태를 Pose로 저장한다."""
@@ -420,7 +427,8 @@ class ArmPoseCLI(Node):
         print(f"Pose {pose_id}: {pose['name']}")
         for mid in ALL_MOTOR_IDS:
             value = pose["angles"][str(mid)]
-            print(f"  ID {mid}: {'NULL' if value is None else f'{value:+.3f}°'}")
+            text = "NULL" if value is None else f"{self._display_angle(value):.3f}°"
+            print(f"  ID {mid}: {text}")
 
     def status(self) -> None:
         snapshot = self._snapshot_angles()
@@ -429,7 +437,8 @@ class ArmPoseCLI(Node):
         print("=" * 44)
         for mid in ALL_MOTOR_IDS:
             value = snapshot[mid]
-            print(f" ID {mid}: {'NULL' if value is None else f'{value:+.3f}°'}")
+            text = "NULL" if value is None else f"{self._display_angle(value):.3f}°"
+            print(f" ID {mid}: {text}")
         print("-" * 44)
         for spec in self.specs:
             state = "ON" if self.teach_state[spec.key] else "OFF"

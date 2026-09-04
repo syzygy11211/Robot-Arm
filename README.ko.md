@@ -4,7 +4,7 @@
 
 LK-TECH RS485 모터 8개로 구성된 iROI 양팔 로봇의 ROS2 Humble 제어 패키지입니다. 모터 절대각 기준 복원, 현재 위치 HOLD, 절대 관절각 이동, Teach, Pose 저장·재생, Sequence 실행을 제공합니다.
 
-> 개발 상태: ID 1–8의 통신·모델·각도·개별 영점 확인과 4축 Action 이동을 단계적으로 검증했습니다. 두 RS485 버스에 8개 모터를 동시에 연결한 최종 양팔 검증과 관절 제한 설정은 남아 있습니다.
+> 개발 상태: 두 RS485 bus에서 ID 1–8 양팔 동시 통신·절대각 제어·Teach·Pose·Sequence 실물 검증을 완료했습니다. 남은 제어 안전 설정은 조립 기준 관절별 최소·최대 각도(limit) 확정입니다.
 
 ## 프로젝트 한눈에 보기
 
@@ -12,10 +12,10 @@ LK-TECH RS485 모터 8개로 구성된 iROI 양팔 로봇의 ROS2 Humble 제어 
 |---|---|
 | 문제 | 서로 다른 감속비의 RS485 모터 8개를 양팔로 제어하면서, 전원 재인가 후 좌표를 복원하고 중력 처짐 없이 Pose를 재현해야 했습니다. |
 | 설계 | 오른팔과 왼팔을 독립 namespace·RS485 bus로 분리하고, 저수준 모터 드라이버 위에 ROS2 Topic·Service·Action과 사용자 CLI를 계층화했습니다. |
-| 핵심 구현 | `reference_only`, 현재 위치 HOLD, 절대 관절각 Action, Teach/Pose/Sequence, `null` 기반 부분 Pose, 목표 도착 안정 판정을 구현했습니다. |
-| 실물 결과 | ID 1–8의 통신·모델·각도·개별 영점을 확인했고, 혼합 i10/i36 구성과 4축 Action 이동을 단계적으로 검증했습니다. |
-| 데모 | 완성된 양팔의 시작·Teach 저장·Pose/Sequence 실행 영상과 사진은 최종 8축 실물 검증 후 추가할 예정입니다. |
-| 기술적 의사결정 | 조립 상태에서 자동 영점 이동 대신 기준만 복원하고 HOLD하며, 명령은 상대값이 아닌 절대 출력축 각도로 통일했습니다. 도착은 오차 허용치와 연속 표본으로 판정합니다. |
+| 핵심 구현 | `reference_only`, 현재 위치 HOLD, 절대 관절각 Action, Teach/Pose/Sequence, `null` 기반 부분 Pose, 0~360° CLI 표기와 최단 경로 목표 선택, 목표 도착 안정 판정을 구현했습니다. |
+| 실물 결과 | ID 1–8의 양팔 동시 통신·모델·각도·개별 영점, 양팔 Action·Teach·Pose·Sequence 동작을 실물에서 검증했습니다. |
+| 데모 | 완성된 양팔의 시작·Teach 저장·Pose/Sequence 실행 영상과 사진은 별도 데모 자료로 추가할 예정입니다. |
+| 기술적 의사결정 | 조립 상태에서 자동 영점 이동 대신 기준만 복원하고 HOLD하며, 내부는 연속 관절좌표를 유지하고 CLI는 0~360°로 표시합니다. 동등한 목표 중 최단 경로를 선택하고 도착은 오차 허용치와 연속 표본으로 판정합니다. |
 
 ## 반드시 먼저 읽기
 
@@ -23,7 +23,7 @@ LK-TECH RS485 모터 8개로 구성된 iROI 양팔 로봇의 ROS2 Humble 제어 
 - 최초 실물 검증 또는 배선·조립·영점 설정 변경 후에는 `start_pose:=false`로 시작하세요. 이 경우 시작 위치를 좌표 기준으로만 복원하고 그 자리에서 HOLD합니다. 검증이 완료된 정상 운용에서는 `start_pose:=true`로 Pose 0 자동 실행을 사용할 수 있습니다.
 - Teach ON은 토크를 끕니다. 중력으로 팔이 떨어질 수 있으므로 팔을 잡은 상태에서 실행하세요.
 - 한 RS485 포트는 한 프로그램만 사용해야 합니다. `motor_control_node` 실행 중 같은 포트로 `scan_ids`, `probe_motors`, `check_home`을 실행하지 마세요.
-- 현재 관절 최소·최대 제한은 아직 설정하지 않았습니다. 작은 각도와 낮은 속도로 실제 움직임과 구조 간섭을 먼저 확인하세요.
+- 관절 최소·최대 limit 구조는 구현됐지만 ID별 값은 아직 `null`입니다. limit을 확정하기 전에는 작은 각도와 낮은 속도로 실제 움직임과 구조 간섭을 확인하세요.
 
 ## 최종 모터 구성
 
@@ -153,18 +153,18 @@ ros2 run motor_control_pkg arm_cli --ros-args -p mode:=dual
 입력은 `활성 모터 개수만큼의 목표각 + 속도 1개`입니다. 단위는 출력축 기준 degree와 degree/s입니다.
 
 ```text
-# 오른팔을 [10, -5, 20, 0]°로 15°/s 이동
-arm> 10 -5 20 0 15
+# 오른팔을 [10, 355, 20, 0]°로 15°/s 이동
+arm> 10 355 20 0 15
 
 # 오른팔만 이동하고 왼팔은 현재 위치 유지
-arm> 10 -5 20 0 null null null null 15
+arm> 10 355 20 0 null null null null 15
 
 arm> status
 arm> help
 arm> q
 ```
 
-목표각은 상대 이동량이 아니라 저장된 0점을 기준으로 한 **절대 출력축 각도**입니다. 현재 30°일 때 50°를 입력하면 최종 위치는 50°이며 실제 이동량은 +20°입니다. `null`은 그 모터의 최신 현재각으로 치환되어 HOLD됩니다. 활성 팔의 값이 모두 `null`이면 Action 자체를 보내지 않습니다.
+목표각은 상대 이동량이 아니라 저장된 0점을 기준으로 한 **절대 출력축 각도**입니다. CLI는 입력·표시를 `0 ≤ angle < 360°`로 통일합니다. 내부는 연속 좌표를 유지하며, 예를 들어 현재 표시값이 330°일 때 30°를 입력하면 동등한 목표 중 가까운 값을 골라 +60° 경로로 이동합니다. `null`은 그 모터의 최신 현재각으로 치환되어 HOLD됩니다. 활성 팔의 값이 모두 `null`이면 Action 자체를 보내지 않습니다.
 
 ## Pose 지정·저장·실행: `arm_pose_cli`
 
@@ -183,7 +183,7 @@ ros2 run motor_control_pkg arm_pose_cli --ros-args -p mode:=dual
 | `status` | 최신 각도, Teach 상태, 상태 수신 시각 확인 |
 | `list` / `show 0` | Pose 목록 / Pose 상세 확인 |
 | `save 1 wave` | 활성 팔의 최신 실측값을 Pose 1로 저장 |
-| `teach active on` | 한 팔 모드에서 STOP 후 토크 OFF |
+| `teach active on` | 현재 mode의 활성 팔 전체를 STOP 후 Teach ON(토크 OFF); dual에서는 양팔 전체 |
 | `teach right on` | 양팔 모드에서 오른팔만 Teach ON |
 | `teach-save 0 attention` | 활성 팔 Teach OFF + HOLD 후 새 상태를 Pose 0으로 저장 |
 | `pose 0 10` | Pose 0을 10°/s로 실행 |
@@ -227,6 +227,7 @@ target_0x92  = zero_0x92 + target_output_angle × ratio
 - `ratio`: i10은 10.0, i36은 36.0
 - `zero_encoder`, `zero_raw`: 진단용 선택 값. 펌웨어가 `0x90`에 응답하지 않으면 `null`이어도 됩니다.
 - `loop_period_deg`: i10은 3600°, i36은 12960°
+- `min_output_deg`, `max_output_deg`: 연속 관절좌표 기준 소프트 limit. 현재는 모두 `null`이며, 값 확정 후 범위를 벗어난 목표는 Action 단계에서 거부됩니다.
 
 ## HOLD와 Teach 안전 동작
 
@@ -307,16 +308,14 @@ ros2 run motor_control_pkg check_home \
 
 `probe_motors`에서 `0x90 FAIL (timeout)`이 나와도 `0x94`와 `0x92`가 정상이라면 일부 펌웨어의 알려진 선택 명령 미응답일 수 있습니다.
 
-## 첫 실물 인수 시험 순서
+## 실물 검증 완료 항목
 
-1. 팔을 지지하고 한 팔만 `start_pose:=false`로 시작합니다.
-2. 4개 연결, reference sync, 현재 위치 HOLD 로그와 `joint_states`를 확인합니다.
-3. `arm_cli`에서 한 관절만 ±1~2° 목표를 주고 나머지는 `null`로 둡니다.
-4. 실제 움직임과 구조 간섭을 확인합니다.
-5. Action이 0.2° 이내 3회 연속 확인 후 완료되는지 봅니다.
-6. `arm_pose_cli`의 Teach로 안전한 Pose 0을 저장하고 5~10°/s로 재생합니다.
-7. 한 팔 검증을 양쪽에 반복한 뒤 두 포트로 `dual_arm_reference.launch.py`를 시험합니다.
-8. 최종 검증 후에만 `start_pose:=true`를 기본 운용에 사용합니다.
+- 두 LC529와 ID 1–8의 양팔 동시 통신
+- `reference_only` 좌표 복원과 현재 위치 HOLD
+- 오른팔·왼팔·양팔 `arm_cli` 절대각 제어
+- Teach ON/OFF, `teach active`/팔별 대상 선택, Pose 저장·재생·Sequence
+- `null` HOLD, 0~360° CLI 표기, 동등 목표 최단 경로 선택
+- 목표 오차 0.2° 이내 3회 연속 기반 Action 완료 판정
 
 ## 사용 기술
 
@@ -346,14 +345,12 @@ ros2 run motor_control_pkg check_home \
 - 한 팔·양팔을 동일한 코드로 운용하도록 namespace와 ID mapping을 분리
 - 높은 주기의 RS485 polling으로 Teach/Torque 서비스가 timeout되는 문제를 callback group 분리로 해결
 - 기존 'serial_lock'은 유지해 RS485 통신 충돌을 방지하면서 제어 서비스 응답성을 확보
+- 연속 내부 좌표와 0~360° CLI 표기를 분리하고, 동등 목표 중 최단 이동 경로를 선택
+- 관절별 소프트 limit 구조를 config에 마련해 값 확정 후 Action 단계에서 목표를 차단
 
 ## 남은 작업
 
-- [ ] 두 LC529와 ID 1–8 동시 통신 검증
 - [ ] 관절별 최소·최대 각도 제한
-- [ ] 양팔 Teach/Pose 0/Sequence 실물 검증
-- [ ] 비상 정지와 통신 장애 recovery 절차 확정
-- [ ] 정상 운용용 Pose library 작성
 
 ## 문제 해결
 

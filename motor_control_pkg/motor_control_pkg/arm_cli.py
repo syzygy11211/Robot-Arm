@@ -183,7 +183,14 @@ class ArmCLI(Node):
         angle = float(value)
         if not math.isfinite(angle):
             raise ValueError("각도는 유한한 숫자 또는 null이어야 합니다.")
-        return angle
+        # CLI는 한 바퀴 표시 체계(0 <= angle < 360)만 노출한다. 실제 목표의
+        # 연속 좌표 선택은 motor_control_node가 현재 위치 기준으로 처리한다.
+        return angle % 360.0
+
+    @staticmethod
+    def _display_angle(value: float) -> float:
+        """연속 관절 좌표를 사람이 읽는 0~360도 표기로 바꾼다."""
+        return float(value) % 360.0
 
     def move(self, requested: Dict[int, Optional[float]], speed: float) -> None:
         speed = self._validate_speed(speed)
@@ -262,7 +269,7 @@ class ArmCLI(Node):
                 print(f"  {spec.key}: {age_text}")
                 for mid in spec.motor_ids:
                     value = self.current_angles.get(mid)
-                    text = "NULL" if value is None else f"{value:+.3f}°"
+                    text = "NULL" if value is None else f"{self._display_angle(value):.3f}°"
                     print(f"    ID {mid}: {text}")
 
     def print_help(self) -> None:
@@ -273,11 +280,11 @@ class ArmCLI(Node):
         print(f"  모터 순서: {list(self.motor_ids)}")
         print()
         if self.mode == "right":
-            print("  예: 10 -5 20 0 15")
+            print("  예: 10 355 20 0 15")
         elif self.mode == "left":
-            print("  예: 0 10 -5 20 15")
+            print("  예: 0 10 355 20 15")
         else:
-            print("  예: 10 -5 20 0 null null null null 15")
+            print("  예: 10 355 20 0 null null null null 15")
         print("  status")
         print("  help")
         print("  q")

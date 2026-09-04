@@ -10,7 +10,9 @@
       "zero_single_deg": 0.0,
       "zero_encoder": null,
       "zero_raw": null,
-      "loop_period_deg": 3600.0
+      "loop_period_deg": 3600.0,
+      "min_output_deg": null,
+      "max_output_deg": null
     },
     {
       "name": "motor2",
@@ -21,7 +23,9 @@
       "zero_single_deg": 0.0,
       "zero_encoder": null,
       "zero_raw": null,
-      "loop_period_deg": 3600.0
+      "loop_period_deg": 3600.0,
+      "min_output_deg": null,
+      "max_output_deg": null
     },
     {
       "name": "motor3",
@@ -32,7 +36,9 @@
       "zero_single_deg": 0.0,
       "zero_encoder": null,
       "zero_raw": null,
-      "loop_period_deg": 12960.0
+      "loop_period_deg": 12960.0,
+      "min_output_deg": null,
+      "max_output_deg": null
     },
     {
       "name": "motor4",
@@ -43,7 +49,9 @@
       "zero_single_deg": 0.0,
       "zero_encoder": null,
       "zero_raw": null,
-      "loop_period_deg": 12960.0
+      "loop_period_deg": 12960.0,
+      "min_output_deg": null,
+      "max_output_deg": null
     },
     {
       "name": "motor5",
@@ -54,7 +62,9 @@
       "zero_single_deg": 0.0,
       "zero_encoder": null,
       "zero_raw": null,
-      "loop_period_deg": 3600.0
+      "loop_period_deg": 3600.0,
+      "min_output_deg": null,
+      "max_output_deg": null
     },
     {
       "name": "motor6",
@@ -65,7 +75,9 @@
       "zero_single_deg": 0.0,
       "zero_encoder": null,
       "zero_raw": null,
-      "loop_period_deg": 3600.0
+      "loop_period_deg": 3600.0,
+      "min_output_deg": null,
+      "max_output_deg": null
     },
     {
       "name": "motor7",
@@ -76,7 +88,9 @@
       "zero_single_deg": 0.0,
       "zero_encoder": null,
       "zero_raw": null,
-      "loop_period_deg": 12960.0
+      "loop_period_deg": 12960.0,
+      "min_output_deg": null,
+      "max_output_deg": null
     },
     {
       "name": "motor8",
@@ -87,7 +101,9 @@
       "zero_single_deg": 0.0,
       "zero_encoder": null,
       "zero_raw": null,
-      "loop_period_deg": 12960.0
+      "loop_period_deg": 12960.0,
+      "min_output_deg": null,
+      "max_output_deg": null
     }
   ]
 }

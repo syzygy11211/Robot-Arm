@@ -4,7 +4,7 @@
 
 This repository provides the ROS2 Humble control stack for the iROI dual-arm robot, built from eight LK-TECH RS485 motors. It supports absolute-reference recovery, current-position HOLD, absolute joint-angle motion, Teach mode, persistent poses, and pose sequences.
 
-> Development status: communication, model/angle reads, and individual zero checks have been verified for IDs 1–8, with four-axis Action motion verified in stages. Final simultaneous eight-motor testing on two RS485 buses and joint-limit configuration are still pending.
+> Development status: simultaneous dual-arm communication, absolute-angle control, Teach, Pose, and Sequence hardware validation are complete for IDs 1–8 on two RS485 buses. The remaining control-safety task is defining the per-joint min/max angle limits.
 
 ## Project at a Glance
 
@@ -12,10 +12,10 @@ This repository provides the ROS2 Humble control stack for the iROI dual-arm rob
 |---|---|
 | Problem | Control eight RS485 motors with mixed reduction ratios as two arms, recover coordinates after power-up, prevent gravity sag, and reproduce saved poses. |
 | Design | Separate right and left arms by namespace and RS485 bus, then layer ROS2 Topics, Services, Actions, and user CLIs above a low-level motor driver. |
-| Core implementation | `reference_only`, current-position HOLD, absolute joint Action, Teach/Pose/Sequence workflows, `null` partial poses, and stable target detection. |
-| Hardware result | Communication, model/angle reads, and individual zero references were checked for IDs 1–8; mixed i10/i36 operation and four-axis Action motion were verified in stages. |
-| Demo | Photos and video of full dual-arm startup, Teach capture, and Pose/Sequence execution will be added after final eight-axis hardware validation. |
-| Engineering decisions | Restore the reference and HOLD instead of automatically moving an assembled arm to zero; use absolute output angles rather than relative increments; declare arrival only after tolerance is met across consecutive samples. |
+| Core implementation | `reference_only`, current-position HOLD, absolute joint Action, Teach/Pose/Sequence workflows, `null` partial poses, 0–360° CLI presentation, nearest-equivalent target selection, and stable target detection. |
+| Hardware result | Simultaneous dual-arm communication, model/angle reads, individual zero references, Action, Teach, Pose, and Sequence were validated on real hardware for IDs 1–8. |
+| Demo | Photos and video of full dual-arm startup, Teach capture, and Pose/Sequence execution will be added as separate demo material. |
+| Engineering decisions | Restore the reference and HOLD instead of automatically moving an assembled arm to zero; keep continuous joint coordinates internally while presenting 0–360° in the CLI; choose the nearest equivalent target; declare arrival only after tolerance is met across consecutive samples. |
 
 ## Read This First
 
@@ -23,7 +23,7 @@ This repository provides the ROS2 Humble control stack for the iROI dual-arm rob
 - Use `start_pose:=false` for the first hardware validation and after wiring, assembly, or zero-reference changes. It restores the coordinate reference and HOLDs the current position. After validation, normal operation may use `start_pose:=true` to run Pose 0 automatically.
 - Teach ON disables torque. The arm can fall under gravity, so support it before enabling Teach.
 - Only one process may use an RS485 port. Do not run `scan_ids`, `probe_motors`, or `check_home` on a port while `motor_control_node` is using it.
-- Joint min/max limits are not configured yet. Verify actual motion and mechanical clearance with low speed and very small targets.
+- The per-joint min/max limit structure exists, but every value is currently `null`. Until the limits are measured, verify motion and clearance using low speeds and small targets.
 
 ## Final Motor Topology
 
@@ -153,18 +153,18 @@ ros2 run motor_control_pkg arm_cli --ros-args -p mode:=dual
 Enter one target per active motor followed by one speed. Units are output-axis degrees and degrees per second.
 
 ```text
-# Move the right arm to [10, -5, 20, 0]° at 15°/s
-arm> 10 -5 20 0 15
+# Move the right arm to [10, 355, 20, 0]° at 15°/s
+arm> 10 355 20 0 15
 
 # Move only the right arm; HOLD the left arm at its current position
-arm> 10 -5 20 0 null null null null 15
+arm> 10 355 20 0 null null null null 15
 
 arm> status
 arm> help
 arm> q
 ```
 
-Targets are **absolute output/joint angles** relative to the saved zero, not relative increments. If the current angle is 30° and the command is 50°, the final angle is 50° and the physical change is +20°. A `null` target is replaced with that motor's latest measured angle, so it remains in place. If all active targets for an arm are `null`, no Action is sent to that arm.
+Targets are **absolute output/joint angles** relative to the saved zero, not relative increments. The CLI accepts and displays `0 ≤ angle < 360°`, while the controller retains continuous joint coordinates internally. For example, from a displayed 330° position, a 30° target resolves to the nearest equivalent target and moves +60°. A `null` target is replaced with that motor's latest measured angle, so it remains in place. If all active targets for an arm are `null`, no Action is sent to that arm.
 
 ## Teaching, Saving, and Running Poses: `arm_pose_cli`
 
@@ -183,7 +183,7 @@ Main commands:
 | `status` | Show latest angles, Teach state, and state age |
 | `list` / `show 0` | List poses / inspect one pose |
 | `save 1 wave` | Save the latest measured active-arm state as Pose 1 |
-| `teach active on` | In single-arm mode: STOP, then torque OFF |
+| `teach active on` | STOP and enable Teach (torque OFF) for every active arm; both arms in dual mode |
 | `teach right on` | In dual mode: enable Teach on the right arm only |
 | `teach-save 0 attention` | Teach OFF + HOLD, then save the new state as Pose 0 |
 | `pose 0 10` | Run Pose 0 at 10°/s |
@@ -225,6 +225,7 @@ target_0x92  = zero_0x92 + target_output_angle × ratio
 - `ratio`: 10.0 for i10; 36.0 for i36
 - `zero_encoder`, `zero_raw`: optional diagnostics; they may be `null` when firmware does not answer `0x90`
 - `loop_period_deg`: 3600° for i10; 12960° for i36
+- `min_output_deg`, `max_output_deg`: soft limits in continuous joint coordinates. They are currently `null`; once configured, out-of-range goals are rejected by the Action.
 
 ## HOLD and Teach Safety Behavior
 
@@ -305,16 +306,14 @@ ros2 run motor_control_pkg check_home \
 
 An `0x90 FAIL (timeout)` from `probe_motors` can be an expected optional-command limitation on some firmware if `0x94` and `0x92` are healthy.
 
-## First Real-Hardware Acceptance Sequence
+## Completed Hardware Validation
 
-1. Support the robot and start only one arm with `start_pose:=false`.
-2. Confirm four connections, reference synchronization, current HOLD logs, and fresh `joint_states`.
-3. In `arm_cli`, command only one joint by ±1–2° and use `null` for the other three.
-4. Confirm actual motion and clearance.
-5. Confirm Action completion occurs only after three consecutive samples within 0.2°.
-6. Save a safe Pose 0 with Teach, then replay it at 5–10°/s.
-7. Repeat on both sides, then test `dual_arm_reference.launch.py` with two ports.
-8. Use `start_pose:=true` in normal operation only after the complete validation.
+- Simultaneous dual-LC529 communication for IDs 1–8
+- `reference_only` recovery and current-position HOLD
+- Right, left, and dual `arm_cli` absolute-angle control
+- Teach ON/OFF, `teach active` and arm-specific targeting, Pose save/replay, and Sequence execution
+- `null` HOLD, 0–360° CLI presentation, and nearest-equivalent target selection
+- Action completion based on three consecutive readings within 0.2° of the target
 
 ## Technology Stack
 
@@ -344,14 +343,12 @@ An `0x90 FAIL (timeout)` from `probe_motors` can be an expected optional-command
 - Namespace and ID mapping that allow one code path to operate either one arm or both arms
 - Resolved Teach/Torque service timeouts caused by high-frequency RS485 polling by separating callback groups
 - Preserved the existing 'serial_lock' to prevent RS485 communication conflicts while improving service responsiveness
+- Separation of continuous internal coordinates from 0–360° CLI presentation, with nearest-equivalent target selection
+- Per-joint soft-limit configuration structure that rejects out-of-range goals once measured limits are set
 
 ## Remaining Work
 
-- [ ] Simultaneous communication test with two LC529 adapters and IDs 1–8
 - [ ] Joint min/max angle limits
-- [ ] Real-hardware validation of dual Teach, Pose 0, and sequences
-- [ ] Emergency-stop and communication-recovery procedure
-- [ ] Production pose library
 
 ## Troubleshooting
 

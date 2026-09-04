@@ -306,6 +306,20 @@ class MotorControlNode(Node):
             entry['loop_period_deg'] = float(
                 entry.get('loop_period_deg', self.default_loop_period_deg)
             )
+            # 출력축 기준 소프트 리밋. null이면 아직 미보정이라 해당 방향의
+            # 리밋 검사를 하지 않는다. 값은 UI 표기(0~360)가 아니라 연속
+            # 관절 좌표계 기준이다.
+            for limit_key in ('min_output_deg', 'max_output_deg'):
+                value = entry.get(limit_key)
+                entry[limit_key] = None if value is None else float(value)
+            if (
+                entry['min_output_deg'] is not None
+                and entry['max_output_deg'] is not None
+                and entry['min_output_deg'] > entry['max_output_deg']
+            ):
+                raise RuntimeError(
+                    f"motor_id={mid}의 min_output_deg가 max_output_deg보다 큽니다."
+                )
             by_id[mid] = entry
 
         selected = {}
@@ -408,6 +422,37 @@ class MotorControlNode(Node):
         """출력축 각도차를 감속비로 모터축 각도차로 변환한다."""
         cfg = self.motor_cfg[mid]
         return float(output_delta) * float(cfg['ratio'])
+
+    def _output_period_deg(self, mid):
+        """출력축에서 한 바퀴에 해당하는 각도. 현재 모든 모터는 360도다."""
+        cfg = self.motor_cfg[mid]
+        return float(cfg['loop_period_deg']) / float(cfg['ratio'])
+
+    def _resolve_nearest_equivalent_target(self, mid, requested, current):
+        """주기적으로 같은 목표 중 current에 가장 가까운 연속 좌표를 고른다.
+
+        예: 현재 -30도(표시 330도)에서 사용자가 30도를 요청하면 +30도를
+        선택해 +60도로 이동한다. 30도와 -330도는 같은 한 바퀴 절대 위치지만,
+        후자는 300도 이상 멀기 때문에 선택하지 않는다.
+        """
+        period = self._output_period_deg(mid)
+        if period <= 0.0:
+            raise RuntimeError(f'motor {mid}의 출력축 주기가 올바르지 않습니다: {period}')
+        return float(requested) + round((float(current) - float(requested)) / period) * period
+
+    def _validate_output_limit(self, mid, target):
+        """연속 관절 좌표 target이 config의 소프트 리밋 안인지 확인한다."""
+        cfg = self.motor_cfg[mid]
+        lower = cfg.get('min_output_deg')
+        upper = cfg.get('max_output_deg')
+        if lower is not None and target < float(lower):
+            raise RuntimeError(
+                f'motor {mid} 목표 {target:.3f}deg가 최소 리밋 {float(lower):.3f}deg보다 작습니다.'
+            )
+        if upper is not None and target > float(upper):
+            raise RuntimeError(
+                f'motor {mid} 목표 {target:.3f}deg가 최대 리밋 {float(upper):.3f}deg보다 큽니다.'
+            )
 
     def _open_real_bus_and_motors(self):
         import serial
@@ -1008,7 +1053,9 @@ class MotorControlNode(Node):
             self.get_logger().error(f'[{self.arm_name}] [Action] {result.error_message}')
             return result
 
-        targets = {mid: float(v) for mid, v in zip(self.motor_ids, target_angles)}
+        requested_targets = {
+            mid: float(v) for mid, v in zip(self.motor_ids, target_angles)
+        }
 
         # 사용자가 요청한 속도와 config 상한 중 작은 값을 사용한다. 단위는 출력축 deg/s.
         speed_limits = {}
@@ -1024,6 +1071,27 @@ class MotorControlNode(Node):
                 result.timeout = False
                 result.error_message = f'motor {sorted(failed)} 위치 읽기 실패로 이동 시작 취소'
                 goal_handle.abort()
+                return result
+
+            # Action 목표는 한 바퀴 기준으로 동등한 값이 여럿일 수 있다.
+            # 현재 연속 좌표에 가장 가까운 후보를 선택해 긴 우회 회전을 막는다.
+            try:
+                targets = {
+                    mid: self._resolve_nearest_equivalent_target(
+                        mid, requested_targets[mid], current[mid]
+                    )
+                    for mid in self.motor_ids
+                }
+                for mid in self.motor_ids:
+                    self._validate_output_limit(mid, targets[mid])
+            except RuntimeError as e:
+                result.success = False
+                result.timeout = False
+                result.error_message = str(e)
+                goal_handle.abort()
+                self.get_logger().warn(
+                    f'[{self.arm_name}] [Action] 리밋/목표 검증 거부: {result.error_message}'
+                )
                 return result
 
             distances = {mid: abs(targets[mid] - current[mid]) for mid in self.motor_ids}
@@ -1052,7 +1120,8 @@ class MotorControlNode(Node):
             }
 
             self.get_logger().info(
-                f'[{self.arm_name}] [Action] 이동 시작: targets(output_deg)={targets}, '
+                f'[{self.arm_name}] [Action] 이동 시작: requested={requested_targets}, '
+                f'resolved_targets(output_deg)={targets}, '
                 f'duration≈{duration_t:.2f}s'
             )
 
