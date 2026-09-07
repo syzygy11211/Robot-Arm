@@ -24,9 +24,10 @@ from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
-from std_srvs.srv import SetBool
+from std_srvs.srv import SetBool, Trigger
 
 from iroi_interfaces.action import MoveJoint
+from iroi_interfaces.srv import SetJointReference
 from motor_control_pkg.pose_manager import ALL_MOTOR_IDS, PoseManager
 
 
@@ -90,6 +91,8 @@ class ArmPoseCLI(Node):
         self.action_clients: Dict[str, ActionClient] = {}
         self.torque_clients = {}
         self.teach_clients = {}
+        self.joint_reference_clients = {}
+        self.raw_status_clients = {}
 
         for spec in self.specs:
             self.create_subscription(
@@ -110,6 +113,14 @@ class ArmPoseCLI(Node):
             self.teach_clients[spec.key] = self.create_client(
                 SetBool,
                 f"{spec.namespace}/teach",
+            )
+            self.joint_reference_clients[spec.key] = self.create_client(
+                SetJointReference,
+                f"{spec.namespace}/set_joint_reference",
+            )
+            self.raw_status_clients[spec.key] = self.create_client(
+                Trigger,
+                f"{spec.namespace}/raw_status",
             )
 
     def _make_joint_state_callback(self, spec: ArmSpec):
@@ -161,6 +172,16 @@ class ArmPoseCLI(Node):
                 raise RuntimeError(
                     f"{spec.namespace}/teach Service가 없습니다. "
                     "motor_control_node pose-framework patch를 먼저 적용하세요."
+                )
+            if not self.joint_reference_clients[spec.key].wait_for_service(timeout_sec=5.0):
+                raise RuntimeError(
+                    f"{spec.namespace}/set_joint_reference Service가 없습니다. "
+                    "motor_control_node 관절 보정 patch를 먼저 적용하세요."
+                )
+            if not self.raw_status_clients[spec.key].wait_for_service(timeout_sec=5.0):
+                raise RuntimeError(
+                    f"{spec.namespace}/raw_status Service가 없습니다. "
+                    "motor_control_node 관절 보정 patch를 먼저 적용하세요."
                 )
 
         print("[arm] 연결 완료.")
@@ -389,6 +410,42 @@ class ArmPoseCLI(Node):
             message = "응답 없음" if response is None else response.message
             raise RuntimeError(f"{label} 실패: {message}")
 
+    def _call_trigger(self, client, label: str):
+        future = client.call_async(Trigger.Request())
+        response = self._wait_future(future, timeout_sec=15.0)
+        if response is None or not response.success:
+            message = "응답 없음" if response is None else response.message
+            raise RuntimeError(f"{label} 실패: {message}")
+        return response
+
+    def set_joint_reference(self, target: str) -> None:
+        """현재 차렷 자세를 선택한 팔의 로봇 관절 0도로 기록한다."""
+        specs = self._selected_specs(target)
+        # 오래된 joint_states 상태에서는 사용자도 실제 자세를 확인할 수 없으므로
+        # 저장 요청 자체를 보내지 않는다.
+        for spec in specs:
+            self._require_current_for(spec)
+
+        for spec in specs:
+            client = self.joint_reference_clients[spec.key]
+            future = client.call_async(SetJointReference.Request())
+            response = self._wait_future(future, timeout_sec=15.0)
+            if response is None or not response.success:
+                message = "응답 없음" if response is None else response.message
+                raise RuntimeError(f"[{spec.key}] joint-zero 실패: {message}")
+            values = ', '.join(f'{value:.3f}' for value in response.joint_zero_output_deg)
+            print(f"[arm] {spec.key}: joint-zero 저장 완료 (raw output: [{values}] deg)")
+
+    def show_raw_status(self, target: str) -> None:
+        """진단용 원시 출력축값과 보정 관절값을 함께 표시한다."""
+        for spec in self._selected_specs(target):
+            response = self._call_trigger(
+                self.raw_status_clients[spec.key],
+                f"[{spec.key}] raw-status",
+            )
+            print(f"[{spec.key}] RAW MOTOR / JOINT STATUS")
+            print(response.message)
+
     def set_teach(self, target: str, enabled: bool) -> None:
         specs = self._selected_specs(target)
         for spec in specs:
@@ -463,6 +520,8 @@ class ArmPoseCLI(Node):
         print("  teach <target> on       teach mode ON = torque OFF")
         print("  teach <target> off      현재 위치 기준으로 torque ON + HOLD")
         print("  torque <target> on/off  raw torque 명령 (teach보다 저수준)")
+        print("  joint-zero <target>     현재 자세를 로봇 관절 0도로 저장 (이동 없음)")
+        print("  raw-status <target>     원시 모터값과 보정 관절값 진단")
         print("  status                  현재 각도/teach 상태")
         print("  help")
         print("  q | quit | exit")
@@ -545,6 +604,12 @@ class ArmPoseCLI(Node):
                     if value not in {"on", "off"}:
                         raise ValueError("torque 값은 on/off")
                     self.set_raw_torque(parts[1], enabled=(value == "on"))
+
+                elif cmd == "joint-zero" and len(parts) == 2:
+                    self.set_joint_reference(parts[1])
+
+                elif cmd == "raw-status" and len(parts) == 2:
+                    self.show_raw_status(parts[1])
 
                 elif cmd == "status" and len(parts) == 1:
                     self.status()

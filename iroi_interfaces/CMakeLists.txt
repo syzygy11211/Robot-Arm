@@ -14,6 +14,7 @@ find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "action/MoveJoint.action"
+  "srv/SetJointReference.srv"
 )
 
 if(BUILD_TESTING)

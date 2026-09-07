@@ -12,7 +12,7 @@ LK-TECH RS485 모터 8개로 구성된 iROI 양팔 로봇의 ROS2 Humble 제어 
 |---|---|
 | 문제 | 서로 다른 감속비의 RS485 모터 8개를 양팔로 제어하면서, 전원 재인가 후 좌표를 복원하고 중력 처짐 없이 Pose를 재현해야 했습니다. |
 | 설계 | 오른팔과 왼팔을 독립 namespace·RS485 bus로 분리하고, 저수준 모터 드라이버 위에 ROS2 Topic·Service·Action과 사용자 CLI를 계층화했습니다. |
-| 핵심 구현 | `reference_only`, 현재 위치 HOLD, 절대 관절각 Action, Teach/Pose/Sequence, `null` 기반 부분 Pose, 0~360° CLI 표기와 최단 경로 목표 선택, 목표 도착 안정 판정을 구현했습니다. |
+| 핵심 구현 | `reference_only`, 현재 위치 HOLD, 차렷 기준 관절좌표 보정, 절대 관절각 Action, Teach/Pose/Sequence, `null` 기반 부분 Pose, 0~360° CLI 표기와 최단 경로 목표 선택, 목표 도착 안정 판정을 구현했습니다. |
 | 실물 결과 | ID 1–8의 양팔 동시 통신·모델·각도·개별 영점, 양팔 Action·Teach·Pose·Sequence 동작을 실물에서 검증했습니다. |
 | 데모 | 완성된 양팔의 시작·Teach 저장·Pose/Sequence 실행 영상과 사진은 별도 데모 자료로 추가할 예정입니다. |
 | 기술적 의사결정 | 조립 상태에서 자동 영점 이동 대신 기준만 복원하고 HOLD하며, 내부는 연속 관절좌표를 유지하고 CLI는 0~360°로 표시합니다. 동등한 목표 중 최단 경로를 선택하고 도착은 오차 허용치와 연속 표본으로 판정합니다. |
@@ -186,10 +186,22 @@ ros2 run motor_control_pkg arm_pose_cli --ros-args -p mode:=dual
 | `teach active on` | 현재 mode의 활성 팔 전체를 STOP 후 Teach ON(토크 OFF); dual에서는 양팔 전체 |
 | `teach right on` | 양팔 모드에서 오른팔만 Teach ON |
 | `teach-save 0 attention` | 활성 팔 Teach OFF + HOLD 후 새 상태를 Pose 0으로 저장 |
+| `joint-zero active` | 현재 차렷 자세를 활성 팔의 로봇 관절 0°로 저장; 모터 이동 없음 |
+| `raw-status active` | 원시 모터 출력축값·관절 보정값을 함께 표시하는 진단 명령 |
 | `pose 0 10` | Pose 0을 10°/s로 실행 |
 | `sequence 0 1 2 1 0` | 기본 속도로 Pose를 순서대로 실행 |
 | `delete 2` | Pose 2 삭제; Pose 0은 삭제 불가 |
 | `torque active on/off` | 저수준 토크 제어; 일반 운용은 Teach 명령 권장 |
+
+### 차렷 자세를 관절 영점과 Pose 0으로 저장
+
+기존 Pose 0이 검증된 차렷 자세라면, 먼저 `pose 0`으로 그 자세에 이동합니다. 그 자리에서 `joint-zero active`를 실행하면 모터 원시값을 바꾸지 않고 현재 자세만 로봇 관절 0°로 기록합니다. 그 직후 `teach-save 0 attention`으로 Pose 0을 새 관절 좌표계 기준으로 덮어씁니다. `joint-zero`를 실행한 뒤에는 보정 전 Pose 0을 다시 실행하지 말고, 바로 새 Pose 0으로 덮어쓰세요.
+
+```text
+pose 0 → joint-zero active → teach-save 0 attention
+```
+
+`raw-status active`는 언제든 원시 모터 출력축값, 저장된 관절 영점, 계산된 관절값을 함께 보여 줍니다. 원시값은 진단용으로 계속 보존되며 Pose·상위 제어에는 사용하지 않습니다.
 
 ### 권장 Teach → Pose 0 저장 절차
 
@@ -211,7 +223,7 @@ arm> pose 0 10
 
 ## 좌표와 영점
 
-현재 시스템에서 `zero_single_deg`에 저장한 절대 엔코더 기준을 로봇 관절의 논리 0°로 사용합니다. 주요 모터 명령 frame은 다음과 같습니다.
+`zero_single_deg`는 전원 재인가 후 0x92 좌표계를 복원하는 모터 하드웨어 기준입니다. 로봇 관절의 논리 0°는 차렷 자세에서 별도로 저장한 `joint_zero_output_deg`입니다. 주요 모터 명령 frame은 다음과 같습니다.
 
 | 명령 | 의미 |
 |---|---|
@@ -220,14 +232,16 @@ arm> pose 0 10
 | `0xA4` | `0x92` frame 기준 절대 위치 이동 |
 
 ```text
-output_angle = (current_0x92 - zero_0x92) / ratio
-target_0x92  = zero_0x92 + target_output_angle × ratio
+raw_motor_output_deg = (current_0x92 - zero_0x92) / ratio
+joint_deg            = raw_motor_output_deg - joint_zero_output_deg
+target_0x92           = zero_0x92 + (target_joint_deg + joint_zero_output_deg) × ratio
 ```
 
 - `ratio`: i10은 10.0, i36은 36.0
 - `zero_encoder`, `zero_raw`: 진단용 선택 값. 펌웨어가 `0x90`에 응답하지 않으면 `null`이어도 됩니다.
 - `loop_period_deg`: i10은 3600°, i36은 12960°
-- `min_output_deg`, `max_output_deg`: 연속 관절좌표 기준 소프트 limit. 현재는 모두 `null`이며, 값 확정 후 범위를 벗어난 목표는 Action 단계에서 거부됩니다.
+- `joint_zero_output_deg`: 차렷 자세에서 기록한 원시 모터 출력축값. `joint_deg = raw_motor_output_deg - joint_zero_output_deg`로 로봇 관절값을 계산합니다.
+- `min_joint_deg`, `max_joint_deg`: 차렷 기준 연속 관절좌표 소프트 limit. 현재는 모두 `null`이며, 값 확정 후 범위를 벗어난 목표는 Action 단계에서 거부됩니다.
 
 ## HOLD와 Teach 안전 동작
 
@@ -269,7 +283,7 @@ Action은 명령 전송만으로 성공하지 않습니다. 각 활성 모터가
 | `launch/single_arm_reference.launch.py` | 오른팔 또는 왼팔 한쪽을 reference/HOLD로 시작, Pose 0 선택 실행 |
 | `launch/dual_arm_reference.launch.py` | 두 포트와 양팔 노드 시작, 양팔 Pose 0 선택 실행 |
 | `launch/single_motor_id4_real.launch.py` | ID 4 단일 모터 진단용; 정상 운용용 아님 |
-| `config/zero_config_i10_verified.json` | ID 1–8 모델·감속비·절대 영점·주기 설정 |
+| `config/zero_config_i10_verified.json` | ID 1–8 모델·감속비·하드웨어 절대 영점·관절 영점·관절 limit 설정 |
 | `config/poses.json` | repository 예제/초기 형식. 실제 Pose는 `~/.ros/arm_poses.json` 사용 |
 
 이전 단계의 일부 테스트용 launch는 현재 8모터 체계에 맞춰 정리했습니다.

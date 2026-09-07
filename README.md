@@ -12,7 +12,7 @@ This repository provides the ROS2 Humble control stack for the iROI dual-arm rob
 |---|---|
 | Problem | Control eight RS485 motors with mixed reduction ratios as two arms, recover coordinates after power-up, prevent gravity sag, and reproduce saved poses. |
 | Design | Separate right and left arms by namespace and RS485 bus, then layer ROS2 Topics, Services, Actions, and user CLIs above a low-level motor driver. |
-| Core implementation | `reference_only`, current-position HOLD, absolute joint Action, Teach/Pose/Sequence workflows, `null` partial poses, 0–360° CLI presentation, nearest-equivalent target selection, and stable target detection. |
+| Core implementation | `reference_only`, current-position HOLD, attention-pose joint-coordinate calibration, absolute joint Action, Teach/Pose/Sequence workflows, `null` partial poses, 0–360° CLI presentation, nearest-equivalent target selection, and stable target detection. |
 | Hardware result | Simultaneous dual-arm communication, model/angle reads, individual zero references, Action, Teach, Pose, and Sequence were validated on real hardware for IDs 1–8. |
 | Demo | Photos and video of full dual-arm startup, Teach capture, and Pose/Sequence execution will be added as separate demo material. |
 | Engineering decisions | Restore the reference and HOLD instead of automatically moving an assembled arm to zero; keep continuous joint coordinates internally while presenting 0–360° in the CLI; choose the nearest equivalent target; declare arrival only after tolerance is met across consecutive samples. |
@@ -186,10 +186,22 @@ Main commands:
 | `teach active on` | STOP and enable Teach (torque OFF) for every active arm; both arms in dual mode |
 | `teach right on` | In dual mode: enable Teach on the right arm only |
 | `teach-save 0 attention` | Teach OFF + HOLD, then save the new state as Pose 0 |
+| `joint-zero active` | Store the current attention pose as robot-joint 0° for every active arm; no motor motion |
+| `raw-status active` | Diagnostic view of raw motor-output and calibrated joint values |
 | `pose 0 10` | Run Pose 0 at 10°/s |
 | `sequence 0 1 2 1 0` | Run poses in order at the default speed |
 | `delete 2` | Delete Pose 2; Pose 0 cannot be deleted |
 | `torque active on/off` | Low-level torque control; prefer Teach for normal use |
+
+### Store the Attention Pose as Joint Zero and Pose 0
+
+If the existing Pose 0 is the validated attention pose, first move to it with `pose 0`. Run `joint-zero active` there: it records the current pose as robot-joint 0° without changing any raw motor value or commanding motion. Immediately overwrite Pose 0 with `teach-save 0 attention` in the new joint coordinate frame. Do not run the pre-calibration Pose 0 again after calibration begins.
+
+```text
+pose 0 → joint-zero active → teach-save 0 attention
+```
+
+`raw-status active` always shows the preserved raw motor-output value, saved joint zero, and resulting joint value. Raw values are diagnostic data only; poses and higher-level control use calibrated robot-joint values.
 
 ### Recommended Teach-to-Pose-0 Workflow
 
@@ -209,7 +221,7 @@ When replaying a pose, `null` for an active motor becomes its current angle and 
 
 ## Coordinate and Zero Reference
 
-The current configuration treats the saved absolute encoder reference in `zero_single_deg` as the robot joint's logical 0°. The relevant motor command frames are:
+`zero_single_deg` is the motor-hardware reference used to restore the 0x92 coordinate frame after power-up. Robot-joint logical 0° is stored separately as `joint_zero_output_deg` at the attention pose. The relevant motor command frames are:
 
 | Command | Meaning |
 |---|---|
@@ -218,14 +230,16 @@ The current configuration treats the saved absolute encoder reference in `zero_s
 | `0xA4` | Absolute position command in the `0x92` frame |
 
 ```text
-output_angle = (current_0x92 - zero_0x92) / ratio
-target_0x92  = zero_0x92 + target_output_angle × ratio
+raw_motor_output_deg = (current_0x92 - zero_0x92) / ratio
+joint_deg            = raw_motor_output_deg - joint_zero_output_deg
+target_0x92           = zero_0x92 + (target_joint_deg + joint_zero_output_deg) × ratio
 ```
 
 - `ratio`: 10.0 for i10; 36.0 for i36
 - `zero_encoder`, `zero_raw`: optional diagnostics; they may be `null` when firmware does not answer `0x90`
 - `loop_period_deg`: 3600° for i10; 12960° for i36
-- `min_output_deg`, `max_output_deg`: soft limits in continuous joint coordinates. They are currently `null`; once configured, out-of-range goals are rejected by the Action.
+- `joint_zero_output_deg`: raw motor-output value recorded at the attention pose. Robot-joint values use `joint_deg = raw_motor_output_deg - joint_zero_output_deg`.
+- `min_joint_deg`, `max_joint_deg`: soft limits in continuous coordinates relative to the attention pose. They are currently `null`; once configured, out-of-range goals are rejected by the Action.
 
 ## HOLD and Teach Safety Behavior
 
@@ -267,7 +281,7 @@ If any motor leaves the tolerance, the count resets to zero. This prevents a tar
 | `launch/single_arm_reference.launch.py` | Starts one selected physical arm with reference/HOLD and optional Pose 0 |
 | `launch/dual_arm_reference.launch.py` | Starts both physical buses/arms and optionally runs dual Pose 0 |
 | `launch/single_motor_id4_real.launch.py` | Single-ID-4 diagnostic launch; not the normal runtime |
-| `config/zero_config_i10_verified.json` | ID 1–8 model, ratio, absolute-zero, and period configuration |
+| `config/zero_config_i10_verified.json` | ID 1–8 model, ratio, hardware absolute zero, joint zero, and joint-limit configuration |
 | `config/poses.json` | Repository example/schema; runtime poses use `~/.ros/arm_poses.json` |
 
 Several earlier test-only launches were consolidated while moving to the current eight-motor structure.

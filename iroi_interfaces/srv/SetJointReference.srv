@@ -1,0 +1,6 @@
+# The request is intentionally empty: a namespaced motor_control_node records
+# the current position of every motor assigned to its arm.
+---
+bool success
+string message
+float64[] joint_zero_output_deg

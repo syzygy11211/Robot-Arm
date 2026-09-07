@@ -32,6 +32,7 @@ from sensor_msgs.msg import JointState
 from std_srvs.srv import SetBool, Trigger
 
 from iroi_interfaces.action import MoveJoint
+from iroi_interfaces.srv import SetJointReference
 
 
 class MotorControlNode(Node):
@@ -162,8 +163,9 @@ class MotorControlNode(Node):
         self.torque_enabled = False
         self.teach_mode = False
 
-        # 읽기 실패 시 마지막 정상 위치를 잠깐 유지하기 위한 cache (출력축 deg).
-        self._last_good_output_angle = {}
+        # 읽기 실패 시 마지막 정상 모터 출력축 위치를 잠깐 유지하기 위한 cache.
+        # 이 값은 관절 영점 보정 전의 원시 연속 좌표다.
+        self._last_good_motor_output_angle = {}
 
         # mock mode는 출력축 각도를 직접 저장한다.
         self.mock_angles = {mid: 0.0 for mid in self.motor_ids}
@@ -220,6 +222,17 @@ class MotorControlNode(Node):
 
         # /set_zero: 현재 물리 위치의 0x94 값을 새로운 절대 영점으로 파일에 저장.
         self.set_zero_srv = self.create_service(Trigger, 'set_zero', self.set_zero_callback)
+
+        # /set_joint_reference: 현재 차렷 자세를 로봇 관절 0도로 기록한다.
+        # 기존 0x94 절대 영점(set_zero)과는 별개의 보정값이다.
+        self.set_joint_reference_srv = self.create_service(
+            SetJointReference,
+            'set_joint_reference',
+            self.set_joint_reference_callback,
+        )
+
+        # 원시 0x92 기반 모터 출력축값은 일반 제어에서는 숨기고, 진단용으로만 제공한다.
+        self.raw_status_srv = self.create_service(Trigger, 'raw_status', self.raw_status_callback)
 
         # /home: 저장된 절대 영점으로 다시 자동 복귀.
         self.home_srv = self.create_service(Trigger, 'home', self.home_callback)
@@ -306,19 +319,29 @@ class MotorControlNode(Node):
             entry['loop_period_deg'] = float(
                 entry.get('loop_period_deg', self.default_loop_period_deg)
             )
-            # 출력축 기준 소프트 리밋. null이면 아직 미보정이라 해당 방향의
-            # 리밋 검사를 하지 않는다. 값은 UI 표기(0~360)가 아니라 연속
-            # 관절 좌표계 기준이다.
-            for limit_key in ('min_output_deg', 'max_output_deg'):
-                value = entry.get(limit_key)
+            # 모터 하드웨어 기준 원시 출력축값에서 로봇 관절값으로 옮길 때 쓸
+            # 차렷 자세 offset. null이면 기존 동작과 호환되게 0으로 해석하되,
+            # 관절 기준점이 아직 미보정이라는 뜻이다.
+            joint_zero = entry.get('joint_zero_output_deg')
+            entry['joint_zero_output_deg'] = (
+                None if joint_zero is None else float(joint_zero)
+            )
+
+            # 관절 기준 소프트 리밋. 이전 min/max_output_deg는 값이 있다면
+            # 한 번만 호환해서 읽는다. 새로 저장하는 config는 joint 명칭만 사용한다.
+            for limit_key, legacy_key in (
+                ('min_joint_deg', 'min_output_deg'),
+                ('max_joint_deg', 'max_output_deg'),
+            ):
+                value = entry.get(limit_key, entry.get(legacy_key))
                 entry[limit_key] = None if value is None else float(value)
             if (
-                entry['min_output_deg'] is not None
-                and entry['max_output_deg'] is not None
-                and entry['min_output_deg'] > entry['max_output_deg']
+                entry['min_joint_deg'] is not None
+                and entry['max_joint_deg'] is not None
+                and entry['min_joint_deg'] > entry['max_joint_deg']
             ):
                 raise RuntimeError(
-                    f"motor_id={mid}의 min_output_deg가 max_output_deg보다 큽니다."
+                    f"motor_id={mid}의 min_joint_deg가 max_joint_deg보다 큽니다."
                 )
             by_id[mid] = entry
 
@@ -360,6 +383,16 @@ class MotorControlNode(Node):
                 for mid in self.motor_ids
             )
         )
+        uncalibrated = [
+            mid for mid in self.motor_ids
+            if selected[mid].get('joint_zero_output_deg') is None
+        ]
+        if uncalibrated:
+            self.get_logger().warn(
+                f'[{self.arm_name}] 관절 기준점 미보정 ID={uncalibrated}. '
+                '현재는 모터 출력축 좌표를 관절 좌표로 임시 사용합니다. '
+                '차렷 자세에서 /set_joint_reference를 한 번 실행하세요.'
+            )
         return selected
 
     def _save_motor_config(self):
@@ -428,6 +461,19 @@ class MotorControlNode(Node):
         cfg = self.motor_cfg[mid]
         return float(cfg['loop_period_deg']) / float(cfg['ratio'])
 
+    def _joint_zero_output_deg(self, mid):
+        """차렷 자세에서 저장한 원시 출력축값. null은 아직 미보정 상태다."""
+        value = self.motor_cfg[mid].get('joint_zero_output_deg')
+        return 0.0 if value is None else float(value)
+
+    def _motor_output_to_joint(self, mid, motor_output_deg):
+        """원시 모터 출력축 연속 좌표를 로봇 관절 연속 좌표로 변환한다."""
+        return float(motor_output_deg) - self._joint_zero_output_deg(mid)
+
+    def _joint_to_motor_output(self, mid, joint_deg):
+        """로봇 관절 연속 좌표를 원시 모터 출력축 연속 좌표로 변환한다."""
+        return float(joint_deg) + self._joint_zero_output_deg(mid)
+
     def _resolve_nearest_equivalent_target(self, mid, requested, current):
         """주기적으로 같은 목표 중 current에 가장 가까운 연속 좌표를 고른다.
 
@@ -440,18 +486,18 @@ class MotorControlNode(Node):
             raise RuntimeError(f'motor {mid}의 출력축 주기가 올바르지 않습니다: {period}')
         return float(requested) + round((float(current) - float(requested)) / period) * period
 
-    def _validate_output_limit(self, mid, target):
+    def _validate_joint_limit(self, mid, target):
         """연속 관절 좌표 target이 config의 소프트 리밋 안인지 확인한다."""
         cfg = self.motor_cfg[mid]
-        lower = cfg.get('min_output_deg')
-        upper = cfg.get('max_output_deg')
+        lower = cfg.get('min_joint_deg')
+        upper = cfg.get('max_joint_deg')
         if lower is not None and target < float(lower):
             raise RuntimeError(
-                f'motor {mid} 목표 {target:.3f}deg가 최소 리밋 {float(lower):.3f}deg보다 작습니다.'
+                f'motor {mid} 관절 목표 {target:.3f}deg가 최소 리밋 {float(lower):.3f}deg보다 작습니다.'
             )
         if upper is not None and target > float(upper):
             raise RuntimeError(
-                f'motor {mid} 목표 {target:.3f}deg가 최대 리밋 {float(upper):.3f}deg보다 큽니다.'
+                f'motor {mid} 관절 목표 {target:.3f}deg가 최대 리밋 {float(upper):.3f}deg보다 큽니다.'
             )
 
     def _open_real_bus_and_motors(self):
@@ -593,7 +639,7 @@ class MotorControlNode(Node):
             self.homed = True
             try:
                 self._hold_current_positions('reference_only sync 직후')
-                positions, failed = self._read_all_output_angles()
+                positions, failed = self._read_all_motor_output_angles()
                 if failed:
                     raise RuntimeError(
                         f'reference sync 직후 위치 확인 실패: motor {sorted(failed)}'
@@ -603,7 +649,7 @@ class MotorControlNode(Node):
                 raise
             self.get_logger().info(
                 f'[{self.arm_name}] reference sync + 현재 위치 HOLD 완료. '
-                f'현재 출력축 위치={positions}'
+                f'현재 원시 출력축 위치={positions}'
             )
 
     def _home_all_motors(self):
@@ -743,17 +789,17 @@ class MotorControlNode(Node):
 
             # 3) Homing 후에는 0x92-zero_92를 유일한 위치 기준으로 사용한다.
             self.homed = True
-            final_positions, failed = self._read_all_output_angles()
+            final_positions, failed = self._read_all_motor_output_angles()
             if failed:
                 self.homed = False
                 raise RuntimeError(f'Homing 직후 위치 확인 실패: motor {sorted(failed)}')
 
             self.get_logger().info(
-                f'[{self.arm_name}] Homing 완료. 출력축 기준 위치={final_positions}'
+                f'[{self.arm_name}] Homing 완료. 원시 출력축 위치={final_positions}'
             )
 
-    def _read_all_output_angles(self):
-        """모든 모터의 현재 출력축 각도[deg]를 읽는다.
+    def _read_all_motor_output_angles(self):
+        """모든 모터의 현재 원시 출력축 각도[deg]를 읽는다.
 
         real mode에서는 반드시 0x92 기준으로 계산한다:
             (read_multi_angle() - zero_92) / ratio
@@ -762,7 +808,10 @@ class MotorControlNode(Node):
             return dict(self.mock_angles), set()
 
         if not self.homed:
-            return {mid: self._last_good_output_angle.get(mid, 0.0) for mid in self.motor_ids}, set(self.motor_ids)
+            return {
+                mid: self._last_good_motor_output_angle.get(mid, 0.0)
+                for mid in self.motor_ids
+            }, set(self.motor_ids)
 
         angles = {}
         failed = set()
@@ -774,13 +823,21 @@ class MotorControlNode(Node):
                     mid, cur_92 - self.zero_92[mid]
                 )
                 angles[mid] = angle_out
-                self._last_good_output_angle[mid] = angle_out
+                self._last_good_motor_output_angle[mid] = angle_out
             except Exception as e:
                 self.get_logger().warn(f'[{self.arm_name}] motor {mid} 0x92 읽기 실패: {e}')
                 failed.add(mid)
-                angles[mid] = self._last_good_output_angle.get(mid, 0.0)
+                angles[mid] = self._last_good_motor_output_angle.get(mid, 0.0)
 
         return angles, failed
+
+    def _read_all_joint_angles(self):
+        """원시 0x92 출력축 좌표를 보정된 로봇 관절 좌표로 변환해 읽는다."""
+        raw_angles, failed = self._read_all_motor_output_angles()
+        return {
+            mid: self._motor_output_to_joint(mid, raw_angles[mid])
+            for mid in self.motor_ids
+        }, failed
 
     def _stop_all_real_motors(self):
         """실물 모터에 0x81 stop을 보내 즉시 정지한다. 홀딩 토크는 유지된다."""
@@ -805,14 +862,17 @@ class MotorControlNode(Node):
             )
             return
 
-        positions, failed = self._read_all_output_angles()
+        positions, failed = self._read_all_joint_angles()
         if failed:
             self.get_logger().warn(
                 f'[{self.arm_name}] 읽기 실패 모터 {sorted(failed)} - 마지막 정상값 사용',
                 throttle_duration_sec=1.0,
             )
 
-        self.get_logger().info(f'[{self.arm_name}] positions(output_deg)={positions}', throttle_duration_sec=1.0)
+        self.get_logger().info(
+            f'[{self.arm_name}] positions(joint_deg)={positions}',
+            throttle_duration_sec=1.0,
+        )
 
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -1012,15 +1072,80 @@ class MotorControlNode(Node):
             )
         return response
 
+    def set_joint_reference_callback(self, request, response):
+        """현재 자세를 로봇 관절 0도로 기록한다. 모터 이동은 수행하지 않는다."""
+        try:
+            if not self.homed:
+                raise RuntimeError('reference_only sync/home 완료 전에는 관절 기준점을 저장할 수 없습니다.')
+            if self.teach_mode or not self.torque_enabled:
+                raise RuntimeError(
+                    'teach mode 또는 torque OFF 상태에서는 저장할 수 없습니다. '
+                    '현재 자세 HOLD 후 다시 실행하세요.'
+                )
+
+            with self.motion_lock:
+                raw_angles, failed = self._read_all_motor_output_angles()
+                if failed:
+                    raise RuntimeError(
+                        f'원시 모터 위치 읽기 실패: motor {sorted(failed)}. 저장하지 않았습니다.'
+                    )
+
+                for mid in self.motor_ids:
+                    self.motor_cfg[mid]['joint_zero_output_deg'] = raw_angles[mid]
+                self._save_motor_config()
+
+            response.success = True
+            response.joint_zero_output_deg = [raw_angles[mid] for mid in self.motor_ids]
+            response.message = (
+                '현재 자세를 관절 0도로 저장 완료: '
+                + ', '.join(f'ID {mid}={raw_angles[mid]:.3f}' for mid in self.motor_ids)
+            )
+            self.get_logger().warn(
+                f'[{self.arm_name}] {response.message} -> {self.zero_config_path}'
+            )
+        except Exception as e:
+            response.success = False
+            response.joint_zero_output_deg = []
+            response.message = f'관절 기준점 저장 실패: {e}'
+            self.get_logger().error(f'[{self.arm_name}] {response.message}')
+        return response
+
+    def raw_status_callback(self, request, response):
+        """원시 모터 출력축값과 보정된 관절값을 진단용 텍스트로 반환한다."""
+        try:
+            if not self.homed:
+                raise RuntimeError('reference_only sync/home 완료 전입니다.')
+            with self.motion_lock:
+                raw_angles, failed = self._read_all_motor_output_angles()
+            if failed:
+                raise RuntimeError(f'원시 모터 위치 읽기 실패: motor {sorted(failed)}')
+
+            lines = []
+            for mid in self.motor_ids:
+                raw = raw_angles[mid]
+                joint = self._motor_output_to_joint(mid, raw)
+                zero = self.motor_cfg[mid].get('joint_zero_output_deg')
+                zero_text = 'UNSET(0.0으로 임시 해석)' if zero is None else f'{float(zero):.3f}'
+                lines.append(
+                    f'ID {mid}: raw_motor_output={raw:.3f} deg, '
+                    f'joint={joint:.3f} deg, joint_zero={zero_text}'
+                )
+            response.success = True
+            response.message = '\n'.join(lines)
+        except Exception as e:
+            response.success = False
+            response.message = f'raw status 실패: {e}'
+        return response
+
     def cancel_move_callback(self, goal_handle):
         self.get_logger().info(f'[{self.arm_name}] [Action] 취소 요청 수신')
         return CancelResponse.ACCEPT
 
     def execute_move_callback(self, goal_handle):
-        """MoveJoint: 출력축 기준 목표각[deg]으로 여러 모터를 동기 이동한다.
+        """MoveJoint: 보정된 로봇 관절 목표각[deg]으로 여러 모터를 동기 이동한다.
 
         Homing 이후에는 0x94를 위치 추적/목표 계산에 사용하지 않는다.
-        target_92 = zero_92 + target_output_deg * ratio
+        target_92 = zero_92 + (joint_target + joint_zero_output_deg) * ratio
         speed_motor = speed_output_dps * ratio
         로 0xA4에 직접 보낸다.
         """
@@ -1065,7 +1190,7 @@ class MotorControlNode(Node):
             speed_limits[mid] = limit
 
         with self.motion_lock:
-            current, failed = self._read_all_output_angles()
+            current, failed = self._read_all_joint_angles()
             if failed:
                 result.success = False
                 result.timeout = False
@@ -1083,7 +1208,7 @@ class MotorControlNode(Node):
                     for mid in self.motor_ids
                 }
                 for mid in self.motor_ids:
-                    self._validate_output_limit(mid, targets[mid])
+                    self._validate_joint_limit(mid, targets[mid])
             except RuntimeError as e:
                 result.success = False
                 result.timeout = False
@@ -1121,9 +1246,15 @@ class MotorControlNode(Node):
 
             self.get_logger().info(
                 f'[{self.arm_name}] [Action] 이동 시작: requested={requested_targets}, '
-                f'resolved_targets(output_deg)={targets}, '
+                f'resolved_targets(joint_deg)={targets}, '
                 f'duration≈{duration_t:.2f}s'
             )
+
+            # 실제 0xA4에는 하드웨어 원시 출력축 frame으로 되돌린 목표를 보낸다.
+            motor_output_targets = {
+                mid: self._joint_to_motor_output(mid, targets[mid])
+                for mid in self.motor_ids
+            }
 
             if self.mock_mode:
                 pass
@@ -1134,7 +1265,7 @@ class MotorControlNode(Node):
 
                     ratio = float(self.motor_cfg[mid]['ratio'])
                     target_92 = self.zero_92[mid] + self._output_delta_to_motor(
-                        mid, targets[mid]
+                        mid, motor_output_targets[mid]
                     )
                     speed_motor = synced_speeds[mid] * ratio
 
@@ -1172,19 +1303,18 @@ class MotorControlNode(Node):
                     return result
 
                 if self.mock_mode:
-                    # 0.1초 제어주기 가정으로 출력축 각도를 단순 적분한다.
+                    # 0.1초 제어주기 가정으로 원시 출력축 각도를 단순 적분한다.
                     for mid in self.motor_ids:
                         current_angle = self.mock_angles[mid]
                         step = synced_speeds[mid] * 0.1
-                        error = targets[mid] - current_angle
+                        error = motor_output_targets[mid] - current_angle
                         if abs(error) <= step:
-                            self.mock_angles[mid] = targets[mid]
+                            self.mock_angles[mid] = motor_output_targets[mid]
                         elif step > 0.0:
                             self.mock_angles[mid] += step if error > 0.0 else -step
-                    current = dict(self.mock_angles)
-                    failed = set()
+                    current, failed = self._read_all_joint_angles()
                 else:
-                    current, failed = self._read_all_output_angles()
+                    current, failed = self._read_all_joint_angles()
 
                 if failed:
                     self._stop_all_real_motors()
