@@ -147,7 +147,12 @@ class ArmPoseCLI(Node):
         Pose JSON에는 연속 좌표를 그대로 보관해 상위 제어와 경로 선택에 필요한
         정보를 잃지 않는다.
         """
-        return float(value) % 360.0
+        # 0x92 응답의 양자화 오차로 발생하는 ±0.001° 수준의 영점 흔들림은
+        # CLI에서 359.999°로 보이지 않도록 표시만 0°로 정리한다.
+        numeric_value = float(value)
+        if abs(numeric_value) <= 0.01:
+            return 0.0
+        return numeric_value % 360.0
 
     @staticmethod
     def _wait_future(future, timeout_sec: float = 15.0):
