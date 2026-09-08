@@ -1,6 +1,3 @@
-import os
-
-from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch_ros.actions import Node
 
@@ -11,8 +8,7 @@ def generate_launch_description():
     주의: 이 launch는 mock이 아니며 시작 직후 저장된 0x94 절대 영점(3599.98 deg)으로
     자동 homing한다. 모터 주변을 비운 뒤 실행할 것.
     """
-    package_share = get_package_share_directory('motor_control_pkg')
-    zero_config = os.path.join(package_share, 'config', 'zero_config_i10_verified.json')
+    zero_config = '~/.ros/iroi_zero_config.json'
 
     node = Node(
         package='motor_control_pkg',

@@ -281,7 +281,7 @@ If any motor leaves the tolerance, the count resets to zero. This prevents a tar
 | `launch/single_arm_reference.launch.py` | Starts one selected physical arm with reference/HOLD and optional Pose 0 |
 | `launch/dual_arm_reference.launch.py` | Starts both physical buses/arms and optionally runs dual Pose 0 |
 | `launch/single_motor_id4_real.launch.py` | Single-ID-4 diagnostic launch; not the normal runtime |
-| `config/zero_config_i10_verified.json` | ID 1–8 model, ratio, hardware absolute zero, joint zero, and joint-limit configuration |
+| `config/zero_config_i10_verified.json` | Git-tracked ID 1–8 config template; not the runtime calibration store |
 | `config/poses.json` | Repository example/schema; runtime poses use `~/.ros/arm_poses.json` |
 
 Several earlier test-only launches were consolidated while moving to the current eight-motor structure.
@@ -314,7 +314,7 @@ ros2 run motor_control_pkg probe_motors \
   --port /dev/ttyUSB0 --ids 1 2 3 4
 
 ros2 run motor_control_pkg check_home \
-  --config ~/iroi_ws/src/motor_control_pkg/config/zero_config_i10_verified.json \
+  --config ~/.ros/iroi_zero_config.json \
   --id 1
 ```
 
@@ -369,6 +369,6 @@ An `0x90 FAIL (timeout)` from `probe_motors` can be an expected optional-command
 - Missing Action: verify the matching arm launch with `ros2 action list`.
 - `joint_states is stale`: check the node log and RS485 bus. The CLI refuses to move on stale data.
 - Cannot open serial port: stop any other node or diagnostic process using that port.
-- Missing config: verify the `zero_config:=...` argument and the installed config files.
+- Runtime config: `~/.ros/iroi_zero_config.json` is the only file used and updated on the robot. JSON files under `src/config` and `install` are template/build artifacts; do not edit physical calibration there.
 - Pose causes no motion: use `show <ID>` and check whether every active value is `null`.
 - Unexpected motion: stop further motion and re-check the absolute target angle and physical joint movement.

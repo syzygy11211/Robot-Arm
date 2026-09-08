@@ -1,8 +1,5 @@
 """Start one physical iROI arm with reference-only sync and optional Pose 0."""
 
-import os
-
-from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
@@ -81,12 +78,8 @@ def _launch_setup(context):
 
 
 def generate_launch_description():
-    package_share = get_package_share_directory('motor_control_pkg')
-    default_zero_config = os.path.join(
-        package_share,
-        'config',
-        'zero_config_i10_verified.json',
-    )
+    # 실물 영점·관절 영점은 build 산출물이 아닌 실행 사용자 경로에 보관한다.
+    default_zero_config = '~/.ros/iroi_zero_config.json'
 
     return LaunchDescription([
         DeclareLaunchArgument(

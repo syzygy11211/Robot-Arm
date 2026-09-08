@@ -59,7 +59,7 @@ class MotorControlNode(Node):
         # real + auto_home에서는 이 파일이 반드시 필요하다.
         self.declare_parameter(
             'zero_config_path',
-            '/home/young/iroi_ws/src/motor_control_pkg/config/zero_config_i10_verified.json'
+            '~/.ros/iroi_zero_config.json'
         )
 
         # real mode 시작 시 저장된 0x94 절대 영점으로 자동 복귀할지 여부.

@@ -283,7 +283,7 @@ Action은 명령 전송만으로 성공하지 않습니다. 각 활성 모터가
 | `launch/single_arm_reference.launch.py` | 오른팔 또는 왼팔 한쪽을 reference/HOLD로 시작, Pose 0 선택 실행 |
 | `launch/dual_arm_reference.launch.py` | 두 포트와 양팔 노드 시작, 양팔 Pose 0 선택 실행 |
 | `launch/single_motor_id4_real.launch.py` | ID 4 단일 모터 진단용; 정상 운용용 아님 |
-| `config/zero_config_i10_verified.json` | ID 1–8 모델·감속비·하드웨어 절대 영점·관절 영점·관절 limit 설정 |
+| `config/zero_config_i10_verified.json` | Git에 보관하는 ID 1–8 config 템플릿. 실물 보정값 저장용이 아님 |
 | `config/poses.json` | repository 예제/초기 형식. 실제 Pose는 `~/.ros/arm_poses.json` 사용 |
 
 이전 단계의 일부 테스트용 launch는 현재 8모터 체계에 맞춰 정리했습니다.
@@ -316,7 +316,7 @@ ros2 run motor_control_pkg probe_motors \
   --port /dev/ttyUSB0 --ids 1 2 3 4
 
 ros2 run motor_control_pkg check_home \
-  --config ~/iroi_ws/src/motor_control_pkg/config/zero_config_i10_verified.json \
+  --config ~/.ros/iroi_zero_config.json \
   --id 1
 ```
 
@@ -371,6 +371,6 @@ ros2 run motor_control_pkg check_home \
 - Action이 없으면: 해당 arm launch가 실행 중인지 `ros2 action list`로 확인합니다.
 - `joint_states가 오래되었습니다`가 나오면: 노드 로그와 RS485 연결을 확인합니다. CLI는 오래된 값으로 움직이지 않습니다.
 - 포트를 열 수 없으면: 같은 포트를 쓰는 다른 node/diagnostic process를 종료합니다.
-- config가 없으면: launch의 `zero_config:=...` 경로와 install 후 파일을 확인합니다.
+- 실물 config: `~/.ros/iroi_zero_config.json`이 유일한 실행·저장 파일입니다. `src/config`와 `install` 아래 JSON은 템플릿/빌드 산출물이므로 실물 보정값을 수정하지 않습니다.
 - Pose가 움직이지 않으면: `show <ID>`로 활성 팔 값이 모두 `null`인지 확인합니다.
 - 예상과 다른 움직임이 있으면: 더 움직이지 말고 현재 절대 목표각과 실제 관절 움직임을 다시 확인합니다.
