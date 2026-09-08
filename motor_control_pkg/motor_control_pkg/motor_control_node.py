@@ -48,6 +48,8 @@ class MotorControlNode(Node):
         self.declare_parameter('motor_ids', [1, 2, 3, 4])
         self.declare_parameter('joint_names', ['joint1', 'joint2', 'joint3', 'joint4'])
         self.declare_parameter('polling_hz', 30.0)
+        # 0이면 상태 1(0x9A) 진단 polling을 끈다. 기본은 RS485 부하를 낮춘 5초 간격.
+        self.declare_parameter('diagnostics_hz', 0.2)
 
         # config에 모터별 max_speed_dps가 없을 때 쓰는 출력축 기준 기본 상한.
         self.declare_parameter('max_speed_dps', 60.0)
@@ -91,6 +93,7 @@ class MotorControlNode(Node):
         self.motor_ids = [int(v) for v in self.get_parameter('motor_ids').value]
         self.joint_names = list(self.get_parameter('joint_names').value)
         self.polling_hz = float(self.get_parameter('polling_hz').value)
+        self.diagnostics_hz = float(self.get_parameter('diagnostics_hz').value)
         self.default_max_speed_dps = float(self.get_parameter('max_speed_dps').value)
         self.mock_mode = bool(self.get_parameter('mock_mode').value)
         self.auto_home = bool(self.get_parameter('auto_home').value)
@@ -166,6 +169,10 @@ class MotorControlNode(Node):
         # 읽기 실패 시 마지막 정상 모터 출력축 위치를 잠깐 유지하기 위한 cache.
         # 이 값은 관절 영점 보정 전의 원시 연속 좌표다.
         self._last_good_motor_output_angle = {}
+
+        # 위치 polling 안에서 저빈도 진단을 실행하기 위한 마지막 실행 시각.
+        # 별도 timer는 고주기 위치 polling에 밀려 실행되지 않을 수 있다.
+        self._last_diagnostics_monotonic = 0.0
 
         # mock mode는 출력축 각도를 직접 저장한다.
         self.mock_angles = {mid: 0.0 for mid in self.motor_ids}
@@ -879,6 +886,49 @@ class MotorControlNode(Node):
         msg.name = [f'{self.arm_name}_{jn}' for jn in self.joint_names]
         msg.position = [math.radians(positions.get(mid, 0.0)) for mid in self.motor_ids]
         self.joint_state_pub.publish(msg)
+
+        # 0x9A 진단은 고주기 위치 timer 안에서만 저빈도로 실행한다. 이렇게 하면
+        # 위치 polling이 계속 ready 상태여도 진단이 굶지 않는다.
+        if self.diagnostics_hz > 0.0 and not self.mock_mode:
+            now = time.monotonic()
+            if now - self._last_diagnostics_monotonic >= (1.0 / self.diagnostics_hz):
+                self._last_diagnostics_monotonic = now
+                self.diagnostics_callback()
+
+    def diagnostics_callback(self):
+        """각 모터의 0x9A State 1 원본 상태를 저빈도로 기록한다.
+
+        실물 MG40/50 응답으로 확인된 전압/오류 바이트를 표시하고, 펌웨어별
+        의미가 아직 확정되지 않은 상태 바이트와 원본 7바이트도 함께 남긴다.
+        """
+        reports = []
+        failed = []
+        for mid, motor in self.motors.items():
+            try:
+                with self.serial_lock:
+                    state = motor.read_state1()
+                raw = state['raw']
+                reports.append(
+                    f'{mid}:T={state["temp_c"]}C,V={state["voltage_v"]:.2f}V,'
+                    f'state=0x{state["state_raw"]:02X},'
+                    f'err=0x{state["error_state"]:02X},raw={raw.hex(" ")}'
+                )
+                if state['error_state']:
+                    self.get_logger().warn(
+                        f'[{self.arm_name}] motor {mid} 0x9A error '
+                        f'0x{state["error_state"]:02X} (raw={raw.hex(" ")})'
+                    )
+            except Exception as e:
+                failed.append(f'{mid}: {e}')
+
+        if reports:
+            self.get_logger().info(
+                f'[{self.arm_name}] diagnostics(0x9A) ' + ' | '.join(reports)
+            )
+        if failed:
+            self.get_logger().warn(
+                f'[{self.arm_name}] diagnostics(0x9A) read failed: ' + ' | '.join(failed)
+            )
 
     def torque_callback(self, request, response):
         """Raw arm-level torque ON/OFF. For teaching, prefer /teach."""

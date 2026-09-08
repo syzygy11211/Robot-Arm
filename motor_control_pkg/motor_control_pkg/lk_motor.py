@@ -120,14 +120,22 @@ class LKMotor:
         return {"temp_c": temp, "iq": iq, "speed_dps": speed, "encoder": encoder}
 
     def read_state1(self):
-        """0x9A: 온도/전압/모터 on-off 상태/에러상태."""
+        """0x9A 상태 1 원본 응답을 읽는다.
+
+        실물 MG40/50 응답에서 전압은 little-endian ``d[1:3]`` 의 0.01 V
+        단위, 오류 플래그는 ``d[6]`` 으로 확인됐다. 원본 바이트도 함께
+        반환해 펌웨어별 나머지 상태 바이트를 계속 확인할 수 있게 한다.
+        """
         d = self.transact(CMD_READ_STATE1)
-        temp = struct.unpack("<b", d[0:1])[0]
-        voltage = struct.unpack("<H", d[1:3])[0]
-        motor_on = (d[5] == 0x00)
-        error_state = d[6]
-        return {"temp_c": temp, "voltage_v": voltage / 100.0,
-                "motor_on": motor_on, "error_state": error_state}
+        if len(d) != 7:
+            raise ProtocolError(f'cmd 0x{CMD_READ_STATE1:02X} 상태 길이 이상: {len(d)}/7')
+        return {
+            'temp_c': struct.unpack('<b', d[0:1])[0],
+            'voltage_v': struct.unpack('<H', d[1:3])[0] / 100.0,
+            'state_raw': d[5],
+            'error_state': d[6],
+            'raw': bytes(d),
+        }
 
     # --- 제어 명령 ---------------------------------------------------------
 
