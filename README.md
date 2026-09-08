@@ -320,6 +320,19 @@ ros2 run motor_control_pkg check_home \
 
 An `0x90 FAIL (timeout)` from `probe_motors` can be an expected optional-command limitation on some firmware if `0x94` and `0x92` are healthy.
 
+### Runtime `0x9A` State Diagnostics
+
+While the motor node is running, it reads each motor's read-only State 1 (`0x9A`) response every five seconds by default. This is performed inside the node's existing RS485 lock, so do **not** run a separate diagnostic process on the same port.
+
+```text
+[right_arm] diagnostics(0x9A) 1:T=34C,V=24.04V,state=0x00,err=0x00,raw=22 64 09 00 00 00 00
+```
+
+- `T`: motor temperature; `V`: measured motor input voltage; `err`: motor error byte.
+- `state` and `raw` retain firmware-specific status data for later fault comparison. Their non-zero values alone are not interpreted as a fault.
+- If `err` is non-zero or voltage drops abnormally during motion, stop large motions and inspect the power supply, power distribution, wiring, and mechanical limits before retrying. The node does not automatically clear motor errors.
+- Set ROS parameter `diagnostics_hz` to change the interval; set it to `0` to disable this diagnostic polling.
+
 ## Completed Hardware Validation
 
 - Simultaneous dual-LC529 communication for IDs 1–8
